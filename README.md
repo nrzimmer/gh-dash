@@ -1,3 +1,12 @@
+> [!NOTE]
+> This is [nrzimmer](https://github.com/nrzimmer)'s personal fork of
+> [dlvhdr/gh-dash](https://github.com/dlvhdr/gh-dash), adding a generic,
+> config-driven **client-side filtering** mechanism (`extraFields` +
+> `localFilter`) for PR/issue sections. See
+> [Custom local filtering](#-custom-local-filtering-extrafields--localfilter)
+> below for what it adds and how to use it. Everything else in this README
+> describes the upstream project.
+
 <br />
 <p align="center">
   <a  class="underline: none;" href="https://gh-dash.dev">
@@ -84,6 +93,111 @@ Thank you to all past and existing sponsors! 🙏🏽
 - Control every setting with a YAML config file
 
 If you like quickly navigating with your keyboard, seeing the PRs and issues you need and you <strong>love the terminal</strong> - <code>DASH</code> is for you! 🫵🏽
+
+## 🧩 Custom local filtering (`extraFields` + `localFilter`)
+
+_This section documents a feature added in this fork, not present upstream._
+
+Upstream `DASH` sections are filtered entirely by GitHub's search API (the `filters` field). That
+API has no qualifiers for things like "has a merge conflict", "has an unresolved review comment",
+or a Project's custom `Status`/`Priority` fields — so those can't be expressed as a `filters`
+string alone.
+
+This fork adds two optional fields to `prSections` and `issuesSections` (and to the generic
+section config) that run a **second, client-side filtering pass** after the normal search:
+
+- **`extraFields`** — a raw GraphQL selection set, injected into the PR/Issue fragment of an
+  unpaginated query used only for filtering. Any field valid on GitHub's `PullRequest` or `Issue`
+  type can be requested here — nothing is hardcoded.
+- **`localFilter`** — a boolean [expr-lang/expr](https://expr-lang.org) expression, evaluated
+  against the raw JSON node fetched via `extraFields` (plus the item's `number`). Items for which
+  it evaluates to `false` are dropped from the section.
+
+`filters` still runs first and does all the heavy lifting server-side (fewer items to fetch and
+filter); `localFilter` only needs to express what `filters` structurally can't.
+
+### Example 1 — PRs with a merge conflict or an unresolved review comment
+
+```yaml
+prSections:
+  - title: Conflict or review pending
+    filters: is:open author:@me
+    extraFields: |
+      mergeable
+      reviewThreads(last: 50) { nodes { isResolved } }
+    localFilter: >-
+      mergeable == "CONFLICTING" or any(reviewThreads.nodes, {.isResolved == false})
+```
+
+### Example 2 — PRs from teammates that are stale and need a nudge
+
+Approximates "not approved, and either never reviewed by me or reviewed before the last commit":
+
+```yaml
+prSections:
+  - title: Stale (push toward merge)
+    filters: >-
+      is:open
+      -author:@me
+      repo:my-org/my-repo
+      updated:{{ nowModify "-60d" }}..{{ nowModify "-1d" }}
+    extraFields: |
+      reviewDecision
+      reviews(last: 50) { nodes { author { login } submittedAt } }
+      commits(last: 1) { nodes { commit { committedDate } } }
+    localFilter: >-
+      reviewDecision != "APPROVED"
+      and not any(reviews.nodes, {.author.login == "YOUR_LOGIN" and .submittedAt >= (len(commits.nodes) > 0 ? commits.nodes[0].commit.committedDate : "")})
+```
+
+### Example 3 — PRs where you left a draft (PENDING) review you never submitted
+
+Pending reviews aren't indexed by GitHub search at all, so this is only possible via `localFilter`:
+
+```yaml
+prSections:
+  - title: Unsubmitted reviews
+    filters: is:open repo:my-org/my-repo
+    extraFields: |
+      reviews(last: 50) { nodes { author { login } state } }
+    localFilter: >-
+      any(reviews.nodes, {.author.login == "YOUR_LOGIN" and .state == "PENDING"})
+```
+
+### Example 4 — Filtering by a GitHub Projects (v2) custom field
+
+`Status`/`Priority` and other Project custom fields aren't reachable via `filters` at all, but they
+are just more GraphQL fields on the underlying Issue/PR (`projectItems(...).fieldValueByName(...)`),
+so `extraFields` can pull them in:
+
+```yaml
+issuesSections:
+  - title: "[Project] In Progress"
+    filters: project:my-org/41 -is:closed
+    limit: 300 # localFilter only sees the first `limit` items — raise it for large boards
+    extraFields: |
+      projectItems(first: 10) {
+        nodes {
+          project { number }
+          status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+        }
+      }
+    localFilter: >-
+      any(projectItems.nodes, {.project.number == 41 and .status != nil and .status.name == "In Progress"})
+```
+
+### Notes / current limitations
+
+- `localFilter` evaluates against **at most `limit` items** per section (default 20, see
+  [`defaults.prsLimit`/`defaults.issuesLimit`](https://gh-dash.dev/configuration/defaults)) — it
+  does not paginate further. For large scopes (e.g. a whole Projects board), set an explicit
+  `limit:` high enough to cover them.
+- A section's displayed/total count still reflects the pre-`localFilter` search result; it isn't
+  adjusted for how many items `localFilter` drops.
+- `expr-lang/expr` syntax notes that came up while writing these: use `any(array, {.field == x})`
+  / `all(...)` for existence checks (not a `#` lambda parameter), and guard optional fields with
+  `!= nil` before accessing a sub-field (`.status != nil and .status.name == "Done"`, not
+  `.status.name == "Done"` alone) since GraphQL returns `null` for unset fields.
 
 ## 📃 Docs
 

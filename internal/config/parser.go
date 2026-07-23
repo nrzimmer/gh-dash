@@ -80,10 +80,12 @@ const (
 )
 
 type SectionConfig struct {
-	Title   string
-	Filters string
-	Limit   *int      `yaml:"limit,omitempty"`
-	Type    *ViewType `yaml:"type,omitempty"`
+	Title       string
+	Filters     string
+	Limit       *int      `yaml:"limit,omitempty"`
+	Type        *ViewType `yaml:"type,omitempty"`
+	ExtraFields string    `yaml:"extraFields,omitempty"`
+	LocalFilter string    `yaml:"localFilter,omitempty"`
 }
 
 type PrsSectionConfig struct {
@@ -92,6 +94,16 @@ type PrsSectionConfig struct {
 	Limit   *int            `yaml:"limit,omitempty"`
 	Layout  PrsLayoutConfig `yaml:"layout,omitempty"`
 	Type    *ViewType       `yaml:"type,omitempty"`
+	// ExtraFields is a raw GraphQL selection set, injected into the
+	// "... on PullRequest { ... }" fragment of a second, unpaginated query
+	// used only for local filtering. Any field valid on GitHub's PullRequest
+	// type may be requested here.
+	ExtraFields string `yaml:"extraFields,omitempty"`
+	// LocalFilter is an expr-lang/expr boolean expression evaluated
+	// client-side against the JSON node fetched via ExtraFields (plus the
+	// PR's `number`). PRs for which it evaluates false are dropped from the
+	// section after the normal `Filters` search already ran server-side.
+	LocalFilter string `yaml:"localFilter,omitempty"`
 }
 
 type IssuesSectionConfig struct {
@@ -99,6 +111,10 @@ type IssuesSectionConfig struct {
 	Filters string
 	Limit   *int               `yaml:"limit,omitempty"`
 	Layout  IssuesLayoutConfig `yaml:"layout,omitempty"`
+	// ExtraFields/LocalFilter: see PrsSectionConfig. Here the fragment is
+	// "... on Issue { ... }" instead of "... on PullRequest { ... }".
+	ExtraFields string `yaml:"extraFields,omitempty"`
+	LocalFilter string `yaml:"localFilter,omitempty"`
 }
 
 type NotificationsSectionConfig struct {

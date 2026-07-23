@@ -30,18 +30,22 @@ func (cfg Config) GetFullScreenDiffPagerEnv() []string {
 
 func (cfg PrsSectionConfig) ToSectionConfig() SectionConfig {
 	return SectionConfig{
-		Title:   cfg.Title,
-		Filters: cfg.Filters,
-		Limit:   cfg.Limit,
-		Type:    cfg.Type,
+		Title:       cfg.Title,
+		Filters:     cfg.Filters,
+		Limit:       cfg.Limit,
+		Type:        cfg.Type,
+		ExtraFields: cfg.ExtraFields,
+		LocalFilter: cfg.LocalFilter,
 	}
 }
 
 func (cfg IssuesSectionConfig) ToSectionConfig() SectionConfig {
 	return SectionConfig{
-		Title:   cfg.Title,
-		Filters: cfg.Filters,
-		Limit:   cfg.Limit,
+		Title:       cfg.Title,
+		Filters:     cfg.Filters,
+		Limit:       cfg.Limit,
+		ExtraFields: cfg.ExtraFields,
+		LocalFilter: cfg.LocalFilter,
 	}
 }
 

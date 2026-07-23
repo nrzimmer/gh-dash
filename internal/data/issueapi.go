@@ -100,6 +100,14 @@ func makeIssuesQuery(query string) string {
 }
 
 func FetchIssues(query string, limit int, pageInfo *PageInfo) (IssuesResponse, error) {
+	return FetchIssuesLocalFiltered(query, limit, pageInfo, "", "")
+}
+
+// FetchIssuesLocalFiltered behaves like FetchIssues, but when localFilter is
+// non-empty it additionally runs a second, unpaginated raw GraphQL query
+// (see filterNumbersLocally) requesting extraFields and drops any issue for
+// which the expression evaluates to false.
+func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter string) (IssuesResponse, error) {
 	var err error
 	if client == nil {
 		client, err = gh.DefaultGraphQLClient()
@@ -137,6 +145,20 @@ func FetchIssues(query string, limit int, pageInfo *PageInfo) (IssuesResponse, e
 	issues := make([]IssueData, 0, len(queryResult.Search.Nodes))
 	for _, node := range queryResult.Search.Nodes {
 		issues = append(issues, node.Issue)
+	}
+
+	if localFilter != "" {
+		matched, err := filterNumbersLocally("Issue", makeIssuesQuery(query), limit, extraFields, localFilter)
+		if err != nil {
+			return IssuesResponse{}, err
+		}
+		filtered := make([]IssueData, 0, len(issues))
+		for _, issue := range issues {
+			if matched[issue.Number] {
+				filtered = append(filtered, issue)
+			}
+		}
+		issues = filtered
 	}
 
 	return IssuesResponse{

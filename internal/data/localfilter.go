@@ -1,0 +1,89 @@
+package data
+
+import (
+	"fmt"
+
+	"github.com/expr-lang/expr"
+)
+
+// localFilterSearchResponse is the generic shape of the raw GraphQL response
+// used to evaluate a section's LocalFilter. Every matched node is decoded as
+// a plain map[string]any, so it works for any GraphQL fragment (PullRequest,
+// Issue, ...) and any set of extra fields the user configures — nothing here
+// is hardcoded to a particular data shape.
+type localFilterSearchResponse struct {
+	Search struct {
+		Nodes []map[string]any `json:"nodes"`
+	} `json:"search"`
+}
+
+// makeLocalFilterQuery builds a raw GraphQL query that runs the same search
+// used to fetch the section, but only requests `number` plus whatever extra
+// fields the user asked for via ExtraFields, inside the given fragment type
+// (e.g. "PullRequest" or "Issue").
+func makeLocalFilterQuery(fragmentType, extraFields string) string {
+	return fmt.Sprintf(`
+query LocalFilterSearch($query: String!, $limit: Int!) {
+  search(type: ISSUE, first: $limit, query: $query) {
+    nodes {
+      ... on %s {
+        number
+        %s
+      }
+    }
+  }
+}`, fragmentType, extraFields)
+}
+
+// filterNumbersLocally evaluates localFilterExpr (an expr-lang/expr boolean
+// expression) against every node matched by fullSearchQuery (the section's
+// search query, already wrapped with is:pr/is:issue etc. by the caller),
+// fetching only `number` plus extraFields. It returns the set of PR/issue
+// numbers for which the expression evaluated to true.
+//
+// If localFilterExpr is empty, this is a no-op: nil is returned and callers
+// should treat that as "don't filter, keep everything".
+func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extraFields, localFilterExpr string) (map[int]bool, error) {
+	if localFilterExpr == "" {
+		return nil, nil
+	}
+
+	if client == nil {
+		return nil, fmt.Errorf("localFilter: no GraphQL client configured")
+	}
+
+	program, err := expr.Compile(localFilterExpr, expr.AsBool())
+	if err != nil {
+		return nil, fmt.Errorf("localFilter: invalid expression %q: %w", localFilterExpr, err)
+	}
+
+	query := makeLocalFilterQuery(fragmentType, extraFields)
+	variables := map[string]any{
+		"query": fullSearchQuery,
+		"limit": limit,
+	}
+
+	var resp localFilterSearchResponse
+	if err := client.Do(query, variables, &resp); err != nil {
+		return nil, fmt.Errorf("localFilter: query failed: %w", err)
+	}
+
+	matched := make(map[int]bool, len(resp.Search.Nodes))
+	for _, node := range resp.Search.Nodes {
+		numberF, ok := node["number"].(float64)
+		if !ok {
+			continue
+		}
+		number := int(numberF)
+
+		out, err := expr.Run(program, node)
+		if err != nil {
+			return nil, fmt.Errorf("localFilter: evaluation failed: %w", err)
+		}
+		if keep, _ := out.(bool); keep {
+			matched[number] = true
+		}
+	}
+
+	return matched, nil
+}

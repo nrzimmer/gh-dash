@@ -506,6 +506,17 @@ func IsEnrichmentCacheCleared() bool {
 }
 
 func FetchPullRequests(query string, limit int, pageInfo *PageInfo) (PullRequestsResponse, error) {
+	return FetchPullRequestsLocalFiltered(query, limit, pageInfo, "", "")
+}
+
+// FetchPullRequestsLocalFiltered behaves like FetchPullRequests, but when
+// localFilter is non-empty it additionally runs a second, unpaginated raw
+// GraphQL query (see filterNumbersLocally) requesting `extraFields` and
+// drops any PR for which the expression evaluates to false. This lets
+// section configs filter on data GitHub's search API itself can't filter
+// on (e.g. mergeable state, unresolved review threads), fully driven by
+// user config rather than hardcoded Go logic.
+func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter string) (PullRequestsResponse, error) {
 	var err error
 	if client == nil {
 		if config.IsFeatureEnabled(config.FF_MOCK_DATA) {
@@ -561,6 +572,24 @@ func FetchPullRequests(query string, limit int, pageInfo *PageInfo) (PullRequest
 	prs := make([]PullRequestData, 0, len(queryResult.Search.Nodes))
 	for _, node := range queryResult.Search.Nodes {
 		prs = append(prs, node.PullRequest)
+	}
+
+	if localFilter != "" {
+		// Local filtering runs against a fixed-size, unpaginated fetch
+		// capped at `limit`, matching what's already on screen for this
+		// page. Filtering happens after the normal search already reduced
+		// server-side, so this second query stays cheap.
+		matched, err := filterNumbersLocally("PullRequest", makePullRequestsQuery(query), limit, extraFields, localFilter)
+		if err != nil {
+			return PullRequestsResponse{}, err
+		}
+		filtered := make([]PullRequestData, 0, len(prs))
+		for _, pr := range prs {
+			if matched[pr.Number] {
+				filtered = append(filtered, pr)
+			}
+		}
+		prs = filtered
 	}
 
 	return PullRequestsResponse{
