@@ -117,35 +117,57 @@ func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extra
 		return IssuesResponse{}, err
 	}
 
-	var queryResult struct {
-		Search struct {
-			Nodes []struct {
-				Issue IssueData `graphql:"... on Issue"`
-			}
-			IssueCount int
-			PageInfo   PageInfo
-		} `graphql:"search(type: ISSUE, first: $limit, after: $endCursor, query: $query)"`
-	}
+	// GitHub caps `first` on the search connection at 100 per page, so a
+	// section `limit` above that (e.g. to give localFilter enough items to
+	// scan) is fetched here as multiple pages, merged into one response.
 	var endCursor *string
 	if pageInfo != nil {
 		endCursor = &pageInfo.EndCursor
 	}
-	variables := map[string]any{
-		"query":     graphql.String(makeIssuesQuery(query)),
-		"limit":     graphql.Int(limit),
-		"endCursor": (*graphql.String)(endCursor),
-	}
-	log.Debug("Fetching issues", "query", query, "limit", limit, "endCursor", endCursor)
-	err = client.Query("SearchIssues", &queryResult, variables)
-	if err != nil {
-		return IssuesResponse{}, err
-	}
-	log.Info("Successfully fetched issues", "query", query, "count", queryResult.Search.IssueCount)
 
-	issues := make([]IssueData, 0, len(queryResult.Search.Nodes))
-	for _, node := range queryResult.Search.Nodes {
-		issues = append(issues, node.Issue)
+	issues := make([]IssueData, 0, limit)
+	var lastPageInfo PageInfo
+	var issueCount int
+	remaining := limit
+	for remaining > 0 {
+		pageSize := remaining
+		if pageSize > graphQLSearchPageMax {
+			pageSize = graphQLSearchPageMax
+		}
+
+		var queryResult struct {
+			Search struct {
+				Nodes []struct {
+					Issue IssueData `graphql:"... on Issue"`
+				}
+				IssueCount int
+				PageInfo   PageInfo
+			} `graphql:"search(type: ISSUE, first: $limit, after: $endCursor, query: $query)"`
+		}
+		variables := map[string]any{
+			"query":     graphql.String(makeIssuesQuery(query)),
+			"limit":     graphql.Int(pageSize),
+			"endCursor": (*graphql.String)(endCursor),
+		}
+		log.Debug("Fetching issues", "query", query, "limit", pageSize, "endCursor", endCursor)
+		if err := client.Query("SearchIssues", &queryResult, variables); err != nil {
+			return IssuesResponse{}, err
+		}
+
+		issueCount = queryResult.Search.IssueCount
+		for _, node := range queryResult.Search.Nodes {
+			issues = append(issues, node.Issue)
+		}
+		lastPageInfo = queryResult.Search.PageInfo
+		remaining -= len(queryResult.Search.Nodes)
+
+		if !queryResult.Search.PageInfo.HasNextPage || len(queryResult.Search.Nodes) == 0 {
+			break
+		}
+		cursor := queryResult.Search.PageInfo.EndCursor
+		endCursor = &cursor
 	}
+	log.Info("Successfully fetched issues", "query", query, "count", issueCount)
 
 	if localFilter != "" {
 		matched, err := filterNumbersLocally("Issue", makeIssuesQuery(query), limit, extraFields, localFilter)
@@ -161,10 +183,15 @@ func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extra
 		issues = filtered
 	}
 
+	totalCount := issueCount
+	if localFilter != "" {
+		totalCount = len(issues)
+	}
+
 	return IssuesResponse{
 		Issues:     issues,
-		TotalCount: queryResult.Search.IssueCount,
-		PageInfo:   queryResult.Search.PageInfo,
+		TotalCount: totalCount,
+		PageInfo:   lastPageInfo,
 	}, nil
 }
 

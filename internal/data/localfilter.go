@@ -13,9 +13,18 @@ import (
 // is hardcoded to a particular data shape.
 type localFilterSearchResponse struct {
 	Search struct {
-		Nodes []map[string]any `json:"nodes"`
+		Nodes    []map[string]any `json:"nodes"`
+		PageInfo struct {
+			HasNextPage bool   `json:"hasNextPage"`
+			EndCursor   string `json:"endCursor"`
+		} `json:"pageInfo"`
 	} `json:"search"`
 }
+
+// graphQLSearchPageMax is GitHub's hard cap on `first` for the `search`
+// connection: requesting more than this in a single page is a query error,
+// regardless of how high a section's `limit` is configured.
+const graphQLSearchPageMax = 100
 
 // makeLocalFilterQuery builds a raw GraphQL query that runs the same search
 // used to fetch the section, but only requests `number` plus whatever extra
@@ -23,13 +32,17 @@ type localFilterSearchResponse struct {
 // (e.g. "PullRequest" or "Issue").
 func makeLocalFilterQuery(fragmentType, extraFields string) string {
 	return fmt.Sprintf(`
-query LocalFilterSearch($query: String!, $limit: Int!) {
-  search(type: ISSUE, first: $limit, query: $query) {
+query LocalFilterSearch($query: String!, $limit: Int!, $after: String) {
+  search(type: ISSUE, first: $limit, after: $after, query: $query) {
     nodes {
       ... on %s {
         number
         %s
       }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
     }
   }
 }`, fragmentType, extraFields)
@@ -58,31 +71,49 @@ func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extra
 	}
 
 	query := makeLocalFilterQuery(fragmentType, extraFields)
-	variables := map[string]any{
-		"query": fullSearchQuery,
-		"limit": limit,
-	}
+	matched := make(map[int]bool)
+	fetched := 0
+	var after *string
 
-	var resp localFilterSearchResponse
-	if err := client.Do(query, variables, &resp); err != nil {
-		return nil, fmt.Errorf("localFilter: query failed: %w", err)
-	}
+	for fetched < limit {
+		pageSize := limit - fetched
+		if pageSize > graphQLSearchPageMax {
+			pageSize = graphQLSearchPageMax
+		}
 
-	matched := make(map[int]bool, len(resp.Search.Nodes))
-	for _, node := range resp.Search.Nodes {
-		numberF, ok := node["number"].(float64)
-		if !ok {
-			continue
+		variables := map[string]any{
+			"query": fullSearchQuery,
+			"limit": pageSize,
+			"after": after,
 		}
-		number := int(numberF)
 
-		out, err := expr.Run(program, node)
-		if err != nil {
-			return nil, fmt.Errorf("localFilter: evaluation failed: %w", err)
+		var resp localFilterSearchResponse
+		if err := client.Do(query, variables, &resp); err != nil {
+			return nil, fmt.Errorf("localFilter: query failed: %w", err)
 		}
-		if keep, _ := out.(bool); keep {
-			matched[number] = true
+
+		for _, node := range resp.Search.Nodes {
+			numberF, ok := node["number"].(float64)
+			if !ok {
+				continue
+			}
+			number := int(numberF)
+
+			out, err := expr.Run(program, node)
+			if err != nil {
+				return nil, fmt.Errorf("localFilter: evaluation failed: %w", err)
+			}
+			if keep, _ := out.(bool); keep {
+				matched[number] = true
+			}
 		}
+
+		fetched += len(resp.Search.Nodes)
+		if !resp.Search.PageInfo.HasNextPage || len(resp.Search.Nodes) == 0 {
+			break
+		}
+		cursor := resp.Search.PageInfo.EndCursor
+		after = &cursor
 	}
 
 	return matched, nil

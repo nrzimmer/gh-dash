@@ -544,35 +544,57 @@ func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo,
 		return PullRequestsResponse{}, err
 	}
 
-	var queryResult struct {
-		Search struct {
-			Nodes []struct {
-				PullRequest PullRequestData `graphql:"... on PullRequest"`
-			}
-			IssueCount int
-			PageInfo   PageInfo
-		} `graphql:"search(type: ISSUE, first: $limit, after: $endCursor, query: $query)"`
-	}
+	// GitHub caps `first` on the search connection at 100 per page, so a
+	// section `limit` above that (e.g. to give localFilter enough items to
+	// scan) is fetched here as multiple pages, merged into one response.
 	var endCursor *string
 	if pageInfo != nil {
 		endCursor = &pageInfo.EndCursor
 	}
-	variables := map[string]any{
-		"query":     graphql.String(makePullRequestsQuery(query)),
-		"limit":     graphql.Int(limit),
-		"endCursor": (*graphql.String)(endCursor),
-	}
-	log.Debug("Fetching PRs", "query", query, "limit", limit, "endCursor", endCursor)
-	err = client.Query("SearchPullRequests", &queryResult, variables)
-	if err != nil {
-		return PullRequestsResponse{}, err
-	}
-	log.Info("Successfully fetched PRs", "count", queryResult.Search.IssueCount)
 
-	prs := make([]PullRequestData, 0, len(queryResult.Search.Nodes))
-	for _, node := range queryResult.Search.Nodes {
-		prs = append(prs, node.PullRequest)
+	prs := make([]PullRequestData, 0, limit)
+	var lastPageInfo PageInfo
+	var issueCount int
+	remaining := limit
+	for remaining > 0 {
+		pageSize := remaining
+		if pageSize > graphQLSearchPageMax {
+			pageSize = graphQLSearchPageMax
+		}
+
+		var queryResult struct {
+			Search struct {
+				Nodes []struct {
+					PullRequest PullRequestData `graphql:"... on PullRequest"`
+				}
+				IssueCount int
+				PageInfo   PageInfo
+			} `graphql:"search(type: ISSUE, first: $limit, after: $endCursor, query: $query)"`
+		}
+		variables := map[string]any{
+			"query":     graphql.String(makePullRequestsQuery(query)),
+			"limit":     graphql.Int(pageSize),
+			"endCursor": (*graphql.String)(endCursor),
+		}
+		log.Debug("Fetching PRs", "query", query, "limit", pageSize, "endCursor", endCursor)
+		if err := client.Query("SearchPullRequests", &queryResult, variables); err != nil {
+			return PullRequestsResponse{}, err
+		}
+
+		issueCount = queryResult.Search.IssueCount
+		for _, node := range queryResult.Search.Nodes {
+			prs = append(prs, node.PullRequest)
+		}
+		lastPageInfo = queryResult.Search.PageInfo
+		remaining -= len(queryResult.Search.Nodes)
+
+		if !queryResult.Search.PageInfo.HasNextPage || len(queryResult.Search.Nodes) == 0 {
+			break
+		}
+		cursor := queryResult.Search.PageInfo.EndCursor
+		endCursor = &cursor
 	}
+	log.Info("Successfully fetched PRs", "count", issueCount)
 
 	if localFilter != "" {
 		// Local filtering runs against a fixed-size, unpaginated fetch
@@ -592,10 +614,19 @@ func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo,
 		prs = filtered
 	}
 
+	totalCount := issueCount
+	if localFilter != "" {
+		// The tab/section header shows TotalCount, which must reflect what's
+		// actually displayed after localFilter — not the raw pre-filter
+		// search count (that reads as a bug: e.g. "(134)" next to an empty
+		// list).
+		totalCount = len(prs)
+	}
+
 	return PullRequestsResponse{
 		Prs:        prs,
-		TotalCount: queryResult.Search.IssueCount,
-		PageInfo:   queryResult.Search.PageInfo,
+		TotalCount: totalCount,
+		PageInfo:   lastPageInfo,
 	}, nil
 }
 
