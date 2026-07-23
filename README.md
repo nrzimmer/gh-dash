@@ -189,11 +189,11 @@ issuesSections:
 ### Notes / current limitations
 
 - `localFilter` evaluates against **at most `limit` items** per section (default 20, see
-  [`defaults.prsLimit`/`defaults.issuesLimit`](https://gh-dash.dev/configuration/defaults)) — it
-  does not paginate further. For large scopes (e.g. a whole Projects board), set an explicit
-  `limit:` high enough to cover them.
-- A section's displayed/total count still reflects the pre-`localFilter` search result; it isn't
-  adjusted for how many items `localFilter` drops.
+  [`defaults.prsLimit`/`defaults.issuesLimit`](https://gh-dash.dev/configuration/defaults)). For
+  large scopes (e.g. a whole Projects board), set an explicit `limit:` high enough to cover them —
+  values above GitHub's 100-per-page cap are paginated internally, so e.g. `limit: 300` works.
+- A section's displayed/total count reflects the post-`localFilter` count when `localFilter` is
+  set (i.e. what you actually see in the list), not the raw pre-filter search count.
 - `expr-lang/expr` syntax notes that came up while writing these: use `any(array, {.field == x})`
   / `all(...)` for existence checks (not a `#` lambda parameter), and guard optional fields with
   `!= nil` before accessing a sub-field (`.status != nil and .status.name == "Done"`, not
