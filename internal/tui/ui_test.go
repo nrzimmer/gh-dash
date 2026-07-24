@@ -2,8 +2,11 @@ package tui
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/template"
@@ -25,6 +28,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationview"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prompt"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prview"
@@ -1736,6 +1740,489 @@ func TestRefreshAll_ClearsEnrichmentCache(t *testing.T) {
 	// Verify cache is cleared - this is the key assertion
 	require.True(t, data.IsEnrichmentCacheCleared(),
 		"cache should be cleared after refresh all key press")
+}
+
+func TestConfigReloadedMsg_UpdatesConfigOnSuccess(t *testing.T) {
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag: "../config/testdata/test-config.yml",
+	})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:    &cfg,
+		View:      config.PRsView,
+		StartTask: func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	prSection := prssection.NewModel(
+		0,
+		ctx,
+		config.PrsSectionConfig{
+			Title:   "Test",
+			Filters: "is:open",
+		},
+		time.Now(),
+		time.Now(),
+	)
+
+	m := Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		prs:              []section.Section{&prSection},
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+	}
+
+	newCfg, err := config.ParseConfig(config.Location{
+		ConfigFlag: "../config/testdata/test-config.yml",
+	})
+	require.NoError(t, err)
+
+	// fetchAllViewSections can panic on this intentionally minimal test
+	// setup (same caveat as TestRefreshAll_ClearsEnrichmentCache); what
+	// matters here is that ctx.Config/ctx.Error were updated correctly
+	// before that call, which happens earlier in the configReloadedMsg
+	// handler.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Logf("Recovered from expected panic in fetchAllViewSections: %v", r)
+			}
+		}()
+		newModel, _ := m.Update(configReloadedMsg{Config: newCfg})
+		m = newModel.(Model)
+	}()
+
+	require.NotNil(t, m.ctx.Config)
+	require.Nil(t, m.ctx.Error, "a successful reload must not set ctx.Error")
+}
+
+func TestConfigReloadedMsg_SetsErrorWithoutCrashingOnFailure(t *testing.T) {
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag: "../config/testdata/test-config.yml",
+	})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:    &cfg,
+		View:      config.PRsView,
+		StartTask: func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	m := Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+	}
+
+	reloadErr := errors.New("boom: invalid config")
+	newModel, _ := m.Update(configReloadedMsg{Err: reloadErr})
+	updated := newModel.(Model)
+
+	require.Equal(t, cfg, *updated.ctx.Config, "config must be left untouched on error")
+	require.ErrorIs(t, updated.ctx.Error, reloadErr)
+}
+
+func newTestModelForNewTabPrompt(t *testing.T, configPath string) (Model, config.Config) {
+	t.Helper()
+
+	cfg, err := config.ParseConfig(config.Location{ConfigFlag: configPath})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		ConfigFlag: configPath,
+		View:       config.PRsView,
+		StartTask:  func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	prSection := prssection.NewModel(
+		0,
+		ctx,
+		config.PrsSectionConfig{
+			Title:   "Mine",
+			Filters: "is:open author:@me",
+		},
+		time.Now(),
+		time.Now(),
+	)
+
+	m := Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		prs:              []section.Section{&prSection},
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+		newTabPrompt:     prompt.NewModel(ctx),
+	}
+
+	return m, cfg
+}
+
+func TestNewTabFromSearch_CtrlTOpensPromptWithCurrentFilters(t *testing.T) {
+	m, _ := newTestModelForNewTabPrompt(t, "../config/testdata/test-config.yml")
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+t"})
+	updated := newModel.(Model)
+
+	require.Equal(t, sectionPromptCreateTab, updated.sectionPromptMode)
+	require.Equal(t, "is:open author:@me", updated.pendingNewTabFilters)
+}
+
+func TestNewTabFromSearch_EmptyTitleKeepsPromptOpen(t *testing.T) {
+	m, _ := newTestModelForNewTabPrompt(t, "../config/testdata/test-config.yml")
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+t"})
+	m = newModel.(Model)
+	require.Equal(t, sectionPromptCreateTab, m.sectionPromptMode)
+
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "enter"})
+	updated := newModel.(Model)
+
+	require.Equal(t, sectionPromptCreateTab, updated.sectionPromptMode, "prompt must stay open when title is empty")
+}
+
+func TestNewTabFromSearch_EscCancelsWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m, _ := newTestModelForNewTabPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+t"})
+	m = newModel.(Model)
+	require.Equal(t, sectionPromptCreateTab, m.sectionPromptMode)
+
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "esc"})
+	updated := newModel.(Model)
+	require.Equal(t, sectionPromptNone, updated.sectionPromptMode)
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, original, after, "esc must not write to the config file")
+}
+
+func TestNewTabFromSearch_EnterWithTitleAppendsSectionAndReloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m, _ := newTestModelForNewTabPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+t"})
+	m = newModel.(Model)
+	require.Equal(t, sectionPromptCreateTab, m.sectionPromptMode)
+
+	m.newTabPrompt.SetValue("Minha nova aba")
+
+	newModel, cmd := m.Update(tea.KeyPressMsg{Text: "enter"})
+	updated := newModel.(Model)
+	require.Equal(t, sectionPromptNone, updated.sectionPromptMode)
+	require.NotNil(t, cmd, "enter with a title must return the reloadConfig cmd")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Contains(t, string(after), "- title: Minha nova aba")
+	require.Contains(t, string(after), "filters: is:open author:@me")
+
+	// The returned cmd is m.reloadConfig - running it must reflect the
+	// newly written section without restarting the process.
+	msg := cmd()
+	reloaded, ok := msg.(configReloadedMsg)
+	require.True(t, ok)
+	require.NoError(t, reloaded.Err)
+
+	found := false
+	for _, s := range reloaded.Config.PRSections {
+		if s.Title == "Minha nova aba" {
+			found = true
+		}
+	}
+	require.True(t, found, "reloaded config must contain the newly appended section")
+}
+
+// newTestModelForEditFilterPrompt is like newTestModelForNewTabPrompt but
+// gives the section a non-zero id, so it looks like a real config-backed
+// tab (not the ephemeral search section) and Ctrl+E is allowed to edit it.
+func newTestModelForEditFilterPrompt(t *testing.T, configPath string) Model {
+	t.Helper()
+
+	cfg, err := config.ParseConfig(config.Location{ConfigFlag: configPath})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		ConfigFlag: configPath,
+		View:       config.PRsView,
+		StartTask:  func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	// Mirror production layout: index/id 0 is always the ephemeral search
+	// section, real sections start at id 1 - m.prs[i].GetId() must equal i,
+	// since updateSection() indexes m.prs by id.
+	searchSection := prssection.NewModel(
+		0,
+		ctx,
+		config.PrsSectionConfig{Title: "", Filters: ""},
+		time.Now(),
+		time.Now(),
+	)
+	prSection := prssection.NewModel(
+		1,
+		ctx,
+		config.PrsSectionConfig{
+			Title:   "Mine",
+			Filters: "is:open author:@me",
+		},
+		time.Now(),
+		time.Now(),
+	)
+
+	return Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		currSectionId:    1,
+		prs:              []section.Section{&searchSection, &prSection},
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+		newTabPrompt:     prompt.NewModel(ctx),
+	}
+}
+
+func TestEditSectionFilter_CtrlEOpensEditorPrefilledWithCurrentValues(t *testing.T) {
+	m := newTestModelForEditFilterPrompt(t, "../config/testdata/test-config.yml")
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	updated := newModel.(Model)
+
+	require.NotNil(t, updated.sectionEditor)
+	require.Equal(t, "prSections", updated.pendingSectionKey)
+	require.Equal(t, "Mine", updated.pendingSectionTitle)
+
+	title, filters, _, _, _ := updated.sectionEditor.Values()
+	require.Equal(t, "Mine", title)
+	require.Equal(t, "is:open author:@me", filters)
+}
+
+func TestEditSectionFilter_RefusesOnEphemeralSearchSection(t *testing.T) {
+	// The ephemeral search-results section (id 0) has no backing config
+	// entry, so Ctrl+E must refuse it instead of trying to edit nothing.
+	m, _ := newTestModelForNewTabPrompt(t, "../config/testdata/test-config.yml")
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	updated := newModel.(Model)
+
+	require.Nil(t, updated.sectionEditor)
+	require.Error(t, updated.ctx.Error)
+}
+
+func TestEditSectionFilter_EscCancelsWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m := newTestModelForEditFilterPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	m = newModel.(Model)
+	require.NotNil(t, m.sectionEditor)
+
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "esc"})
+	updated := newModel.(Model)
+	require.Nil(t, updated.sectionEditor)
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, original, after, "esc must not write to the config file")
+}
+
+func TestEditSectionFilter_CtrlSWithNewValuesUpdatesAndReloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m := newTestModelForEditFilterPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	m = newModel.(Model)
+	require.NotNil(t, m.sectionEditor)
+
+	// New() focuses Title; tab twice reaches Limit (Title -> Filters -> Limit).
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "tab"})
+	m = newModel.(Model)
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "tab"}) // -> Limit
+	m = newModel.(Model)
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "2"})
+	m = newModel.(Model)
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "0"})
+	m = newModel.(Model)
+
+	newModel, cmd := m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	updated := newModel.(Model)
+	require.Nil(t, updated.sectionEditor)
+	require.NotNil(t, cmd, "ctrl+s must return the reloadConfig cmd")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Contains(t, string(after), "limit: 20")
+
+	msg := cmd()
+	reloaded, ok := msg.(configReloadedMsg)
+	require.True(t, ok)
+	require.NoError(t, reloaded.Err)
+
+	found := false
+	for _, s := range reloaded.Config.PRSections {
+		if s.Title == "Mine" && s.Limit != nil && *s.Limit == 20 {
+			found = true
+		}
+	}
+	require.True(t, found, "reloaded config must reflect the updated limit")
+}
+
+func TestEditSectionFilter_RenamingTitleUpdatesConfigAndReloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m := newTestModelForEditFilterPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	m = newModel.(Model)
+	require.NotNil(t, m.sectionEditor)
+
+	// New() focuses Title by default - type directly to rename.
+	for _, ch := range " renamed" {
+		newModel, _ = m.Update(tea.KeyPressMsg{Text: string(ch)})
+		m = newModel.(Model)
+	}
+
+	newModel, cmd := m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	updated := newModel.(Model)
+	require.Nil(t, updated.sectionEditor)
+	require.NotNil(t, cmd, "renaming must still produce the reloadConfig cmd")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Contains(t, string(after), "title: Mine renamed")
+	require.NotContains(t, string(after), "title: Mine\n")
+
+	msg := cmd()
+	reloaded, ok := msg.(configReloadedMsg)
+	require.True(t, ok)
+	require.NoError(t, reloaded.Err)
+
+	found := false
+	for _, s := range reloaded.Config.PRSections {
+		// The fixture's real "Mine" filters (unrelated to the synthetic
+		// value used by the in-memory test section) must survive untouched.
+		if s.Title == "Mine renamed" && strings.Contains(s.Filters, "repo:dlvhdr/gh-dash") {
+			found = true
+		}
+	}
+	require.True(t, found, "reloaded config must contain the renamed section with its filters intact")
+}
+
+func TestEditSectionFilter_UnchangedTitleDoesNotRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yml")
+	original, err := os.ReadFile("../config/testdata/test-config.yml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, original, 0o666))
+
+	m := newTestModelForEditFilterPrompt(t, configPath)
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	m = newModel.(Model)
+	require.NotNil(t, m.sectionEditor)
+
+	// Tab past Title without touching it, edit Limit instead.
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "tab"})
+	m = newModel.(Model)
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "tab"}) // -> Limit
+	m = newModel.(Model)
+	newModel, _ = m.Update(tea.KeyPressMsg{Text: "5"})
+	m = newModel.(Model)
+
+	newModel, cmd := m.Update(tea.KeyPressMsg{Text: "ctrl+s"})
+	updated := newModel.(Model)
+	require.Nil(t, updated.sectionEditor)
+	require.NotNil(t, cmd)
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Contains(t, string(after), "title: Mine\n")
+	require.Contains(t, string(after), "limit: 5")
+}
+
+func TestView_RendersSectionEditorWhenOpen(t *testing.T) {
+	// Regression test: the section editor (and the Ctrl+T prompt) must
+	// actually be drawn on screen, not just tracked in internal state.
+	m := newTestModelForEditFilterPrompt(t, "../config/testdata/test-config.yml")
+	m.ctx.ScreenWidth = 120
+	m.ctx.ScreenHeight = 40
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+e"})
+	m = newModel.(Model)
+	require.NotNil(t, m.sectionEditor)
+
+	view := m.View()
+	require.Contains(t, view.Content, "Editar aba: Mine")
+	require.Contains(t, view.Content, "is:open author:@me")
+}
+
+func TestView_RendersNewTabPromptWhenOpen(t *testing.T) {
+	m, _ := newTestModelForNewTabPrompt(t, "../config/testdata/test-config.yml")
+	m.ctx.ScreenWidth = 120
+	m.ctx.ScreenHeight = 40
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Text: "ctrl+t"})
+	m = newModel.(Model)
+	require.Equal(t, sectionPromptCreateTab, m.sectionPromptMode)
+
+	view := m.View()
+	require.Contains(t, view.Content, "confirmar")
 }
 
 func TestPromptConfirmationForNotificationPR_ApproveWorkflows(t *testing.T) {

@@ -529,3 +529,58 @@ func TestViewRendersAtMainContentWidth(t *testing.T) {
 		})
 	}
 }
+
+func newTestBaseModelForLocalFilter(t *testing.T, localFilter string) BaseModel {
+	t.Helper()
+
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag:       "../../../config/testdata/test-config.yml",
+		SkipGlobalConfig: true,
+	})
+	require.NoError(t, err)
+
+	thm := theme.ParseTheme(&cfg)
+	styles := context.InitStyles(thm)
+
+	ctx := &context.ProgramContext{
+		Config:            &cfg,
+		MainContentWidth:  120,
+		MainContentHeight: 20,
+		Theme:             thm,
+		Styles:            styles,
+	}
+
+	return BaseModel{
+		Ctx:       ctx,
+		Config:    config.SectionConfig{Title: "Test", Filters: "is:open", LocalFilter: localFilter},
+		SearchBar: search.NewModel(ctx, search.SearchOptions{}),
+		Table: table.NewModel(
+			*ctx,
+			constants.Dimensions{Width: 120, Height: 10},
+			time.Now(),
+			time.Now(),
+			nil,
+			nil,
+			"pr",
+			nil,
+			"Loading...",
+			false,
+		),
+	}
+}
+
+func TestView_ShowsLocalFilterLineWhenConfigured(t *testing.T) {
+	m := newTestBaseModelForLocalFilter(t, `status != nil and status.name == "In Progress"`)
+
+	view := m.View()
+
+	require.Contains(t, view, `localFilter: status != nil and status.name == "In Progress"`)
+}
+
+func TestView_OmitsLocalFilterLineWhenNotConfigured(t *testing.T) {
+	m := newTestBaseModelForLocalFilter(t, "")
+
+	view := m.View()
+
+	require.NotContains(t, view, "localFilter:")
+}

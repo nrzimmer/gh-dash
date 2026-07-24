@@ -227,6 +227,69 @@ func TestRebindNotificationKeys_CustomCommand(t *testing.T) {
 	}
 }
 
+func TestRebindUniversalKeys_ReloadConfigBuiltin(t *testing.T) {
+	origKey := Keys.ReloadConfig.Keys()
+	origHelp := Keys.ReloadConfig.Help().Desc
+	defer func() {
+		Keys.ReloadConfig.SetKeys(origKey...)
+		Keys.ReloadConfig.SetHelp(origKey[0], origHelp)
+	}()
+
+	err := rebindUniversal([]config.Keybinding{
+		{Builtin: "reloadConfig", Key: "ctrl+shift+r"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	keys := Keys.ReloadConfig.Keys()
+	if len(keys) != 1 || keys[0] != "ctrl+shift+r" {
+		t.Errorf("expected key to be rebound to ctrl+shift+r, got %v", keys)
+	}
+}
+
+func TestRebindUniversalKeys_NewTabFromSearchBuiltin(t *testing.T) {
+	origKey := Keys.NewTabFromSearch.Keys()
+	origHelp := Keys.NewTabFromSearch.Help().Desc
+	defer func() {
+		Keys.NewTabFromSearch.SetKeys(origKey...)
+		Keys.NewTabFromSearch.SetHelp(origKey[0], origHelp)
+	}()
+
+	err := rebindUniversal([]config.Keybinding{
+		{Builtin: "newTabFromSearch", Key: "ctrl+shift+t"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	keys := Keys.NewTabFromSearch.Keys()
+	if len(keys) != 1 || keys[0] != "ctrl+shift+t" {
+		t.Errorf("expected key to be rebound to ctrl+shift+t, got %v", keys)
+	}
+}
+
+func TestRebindUniversalKeys_EditSectionFilterBuiltin(t *testing.T) {
+	origKey := Keys.EditSectionFilter.Keys()
+	origHelp := Keys.EditSectionFilter.Help().Desc
+	defer func() {
+		Keys.EditSectionFilter.SetKeys(origKey...)
+		Keys.EditSectionFilter.SetHelp(origKey[0], origHelp)
+	}()
+
+	err := rebindUniversal([]config.Keybinding{
+		{Builtin: "editSectionFilter", Key: "ctrl+shift+e"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	keys := Keys.EditSectionFilter.Keys()
+	if len(keys) != 1 || keys[0] != "ctrl+shift+e" {
+		t.Errorf("expected key to be rebound to ctrl+shift+e, got %v", keys)
+	}
+}
+
 func TestFullHelpIncludesCustomNotificationBindings(t *testing.T) {
 	// Set up custom notification bindings
 	CustomNotificationBindings = []key.Binding{

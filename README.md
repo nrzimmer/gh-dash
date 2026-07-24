@@ -1,11 +1,16 @@
 > [!NOTE]
 > This is [nrzimmer](https://github.com/nrzimmer)'s personal fork of
-> [dlvhdr/gh-dash](https://github.com/dlvhdr/gh-dash), adding a generic,
-> config-driven **client-side filtering** mechanism (`extraFields` +
-> `localFilter`) for PR/issue sections. See
-> [Custom local filtering](#-custom-local-filtering-extrafields--localfilter)
-> below for what it adds and how to use it. Everything else in this README
-> describes the upstream project.
+> [dlvhdr/gh-dash](https://github.com/dlvhdr/gh-dash), adding:
+>
+> - a generic, config-driven **client-side filtering** mechanism
+>   (`extraFields` + `localFilter`) for PR/issue sections — see
+>   [Custom local filtering](#-custom-local-filtering-extrafields--localfilter);
+> - **in-app section management** keybindings (reload config, create a tab
+>   from the current search, edit/rename a tab's config without leaving the
+>   dashboard) — see
+>   [In-app section management](#-in-app-section-management-ctrlr-ctrlt-ctrle).
+>
+> Everything else in this README describes the upstream project.
 
 <br />
 <p align="center">
@@ -198,6 +203,42 @@ issuesSections:
   / `all(...)` for existence checks (not a `#` lambda parameter), and guard optional fields with
   `!= nil` before accessing a sub-field (`.status != nil and .status.name == "Done"`, not
   `.status.name == "Done"` alone) since GraphQL returns `null` for unset fields.
+- When a section has `localFilter` set, its current value is shown as a small `localFilter: ...`
+  line right below the search bar, so it doesn't get forgotten.
+
+## ⌨️ In-app section management (Ctrl+R, Ctrl+T, Ctrl+E)
+
+_This section documents features added in this fork, not present upstream._
+
+Upstream `DASH` only ever reads `config.yml` once at startup, and has no way to create or edit a
+section from the running dashboard — every change means quitting, editing YAML by hand, and
+restarting. This fork adds three keybindings (remappable like any other, via `keybindings.universal`
+with the builtin names below) that read and write the same `config.yml` the running dashboard is
+using, live:
+
+- **`Ctrl+R`** (builtin `reloadConfig`) — re-reads `config.yml` and re-applies theme/keybindings/
+  sections immediately, without restarting. A config with a syntax error is reported via the
+  regular error line instead of crashing the dashboard; the previous, still-valid config keeps
+  running.
+- **`Ctrl+T`** (builtin `newTabFromSearch`) — takes the filter currently active in the focused
+  section (including the ephemeral global-search tab) and appends it as a new, permanent section
+  to `prSections`/`issuesSections` under a title you type. Available in the PRs and Issues views.
+- **`Ctrl+E`** (builtin `editSectionFilter`) — opens a small in-TUI form (`Tab`/`Shift+Tab` to move
+  between fields, `Ctrl+S` to save, `Esc` to cancel) to edit the focused section's `Title`,
+  `Filters`, `Limit`, `ExtraFields`, and `LocalFilter` — including renaming the tab. Not available
+  on the ephemeral global-search tab, which has no `config.yml` entry to edit.
+
+All three write to whichever config file `ParseConfig` actually resolved for this run (the
+explicit `--config` path, `GH_DASH_CONFIG`, a repo-root `.gh-dash.yml`, or the global config), by
+patching the YAML text directly — comments and anchors (`&name`/`*name`, e.g. a shared
+`extraFields` block reused across sections) elsewhere in the file are preserved untouched. Only
+the field(s) that actually changed are rewritten, specifically so an untouched `extraFields`/
+`localFilter` holding a shared anchor never gets silently dropped by an unrelated edit.
+
+**Known limitation:** if a repo-local `.gh-dash.yml` and the global config both define
+`prSections`/`issuesSections`, the repo-local one wins wholesale (same merge rule as upstream) —
+writing to the global config in that case has no visible effect. `Ctrl+E`/rename also don't detect
+two sections sharing the same title in one list; the first match is used.
 
 ## 📃 Docs
 

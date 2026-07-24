@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,11 +35,13 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationview"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prompt"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prview"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/reposection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/section"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/sectioneditor"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/sidebar"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/tabs"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/tasks"
@@ -67,7 +70,52 @@ type Model struct {
 	taskSpinner      spinner.Model
 	tasks            map[string]context.Task
 	positionOverride string // "" means no override, "right" or "bottom"
+
+	sectionPromptMode    sectionPromptMode
+	newTabPrompt         prompt.Model
+	pendingNewTabFilters string
+
+	sectionEditor          *sectioneditor.Model
+	pendingSectionTitle    string
+	pendingSectionKey      string
+	pendingSectionOriginal sectionFieldSnapshot
 }
+
+// sectionFieldSnapshot captures a section's fields as they were when the
+// editor was opened, so on save only fields the user actually changed get
+// rewritten. This matters because YAML anchors (e.g. a shared extraFields
+// block reused via *alias in another section) live only in the source text,
+// not in the parsed config - blindly re-marshalling an untouched field
+// would silently drop its anchor and break whatever references it.
+type sectionFieldSnapshot struct {
+	Filters     string
+	Limit       string
+	ExtraFields string
+	LocalFilter string
+}
+
+func newSectionFieldSnapshot(cfg config.SectionConfig) sectionFieldSnapshot {
+	limit := ""
+	if cfg.Limit != nil {
+		limit = strconv.Itoa(*cfg.Limit)
+	}
+	return sectionFieldSnapshot{
+		Filters:     cfg.Filters,
+		Limit:       limit,
+		ExtraFields: cfg.ExtraFields,
+		LocalFilter: cfg.LocalFilter,
+	}
+}
+
+// sectionPromptMode tracks whether m.newTabPrompt's Enter key should create
+// a new tab from the current search (Ctrl+T is its only user - Ctrl+E opens
+// the multi-field m.sectionEditor instead).
+type sectionPromptMode int
+
+const (
+	sectionPromptNone sectionPromptMode = iota
+	sectionPromptCreateTab
+)
 
 type Repositories struct {
 	GHRepo  *repository.Repository
@@ -111,8 +159,60 @@ func NewModel(location config.Location, repos Repositories) Model {
 	m.branchSidebar = branchsidebar.NewModel(m.ctx)
 	m.notificationView = notificationview.NewModel(m.ctx)
 	m.tabs = tabs.NewModel(m.ctx)
+	m.newTabPrompt = prompt.NewModel(m.ctx)
+	m.newTabPrompt.SetPrompt("Título da nova aba: ")
 
 	return m
+}
+
+// configReloadedMsg carries the result of re-parsing the config file on
+// demand (e.g. via Ctrl+R), as opposed to initMsg which is only sent once
+// at startup.
+type configReloadedMsg struct {
+	Config     config.Config
+	ConfigPath string
+	Err        error
+}
+
+func (m *Model) configLocation() config.Location {
+	return config.Location{RepoPath: m.ctx.RepoPath, ConfigFlag: m.ctx.ConfigFlag}
+}
+
+func (m *Model) parseConfigAndRebindKeys() (config.Config, string, error) {
+	location := m.configLocation()
+
+	cfg, err := config.ParseConfig(location)
+	if err != nil {
+		return cfg, "", err
+	}
+
+	configPath, err := config.ResolveConfigPath(location)
+	if err != nil {
+		return cfg, "", err
+	}
+
+	err = keys.Rebind(
+		cfg.Keybindings.Universal,
+		cfg.Keybindings.Issues,
+		cfg.Keybindings.Prs,
+		cfg.Keybindings.Branches,
+		cfg.Keybindings.Notifications,
+		cfg.Keybindings.Cmp,
+	)
+	if err != nil {
+		return cfg, configPath, err
+	}
+
+	return cfg, configPath, nil
+}
+
+// reloadConfig re-parses the config file and reapplies keybindings/theme/
+// sections without restarting the process, in response to Ctrl+R. Unlike
+// initScreen, a parse error here must not kill the process - it is
+// surfaced via configReloadedMsg.Err and the previous config keeps working.
+func (m *Model) reloadConfig() tea.Msg {
+	cfg, configPath, err := m.parseConfigAndRebindKeys()
+	return configReloadedMsg{Config: cfg, ConfigPath: configPath, Err: err}
 }
 
 func (m *Model) initScreen() tea.Msg {
@@ -140,9 +240,7 @@ func (m *Model) initScreen() tea.Msg {
 			)
 	}
 
-	cfg, err := config.ParseConfig(
-		config.Location{RepoPath: m.ctx.RepoPath, ConfigFlag: m.ctx.ConfigFlag},
-	)
+	cfg, configPath, err := m.parseConfigAndRebindKeys()
 	if err != nil {
 		showError(err)
 		return initMsg{Config: cfg}
@@ -158,19 +256,7 @@ func (m *Model) initScreen() tea.Msg {
 		url = res
 	}
 
-	err = keys.Rebind(
-		cfg.Keybindings.Universal,
-		cfg.Keybindings.Issues,
-		cfg.Keybindings.Prs,
-		cfg.Keybindings.Branches,
-		cfg.Keybindings.Notifications,
-		cfg.Keybindings.Cmp,
-	)
-	if err != nil {
-		showError(err)
-	}
-
-	return initMsg{Config: cfg, RepoUrl: url}
+	return initMsg{Config: cfg, ConfigPath: configPath, RepoUrl: url}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -229,6 +315,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.executeNotificationAction(action)
 			}
 			return m, nil
+		}
+
+		// Handle the multi-field section editor (Ctrl+E).
+		if m.sectionEditor != nil {
+			editor, cmd, action := m.sectionEditor.Update(msg)
+
+			switch action {
+			case sectioneditor.ActionCancel:
+				m.sectionEditor = nil
+				return m, nil
+
+			case sectioneditor.ActionSubmit:
+				m.sectionEditor = nil
+				newTitle, filters, limit, extraFields, localFilter := editor.Values()
+				return m, m.saveCurrentSectionEdits(m.pendingSectionKey, m.pendingSectionTitle, newTitle,
+					m.pendingSectionOriginal, filters, limit, extraFields, localFilter)
+
+			default:
+				m.sectionEditor = &editor
+				return m, cmd
+			}
+		}
+
+		// Handle the new-tab-title prompt (Ctrl+T).
+		if m.sectionPromptMode != sectionPromptNone {
+			switch msg.String() {
+			case "esc":
+				m.sectionPromptMode = sectionPromptNone
+				m.newTabPrompt.Blur()
+				m.newTabPrompt.Reset()
+				return m, nil
+
+			case "enter":
+				title := strings.TrimSpace(m.newTabPrompt.Value())
+				if title == "" {
+					// A title is required - keep the prompt open.
+					return m, nil
+				}
+				m.sectionPromptMode = sectionPromptNone
+				m.newTabPrompt.Blur()
+				m.newTabPrompt.Reset()
+				return m, m.createSectionFromCurrentSearch(title, m.pendingNewTabFilters)
+
+			default:
+				var promptCmd tea.Cmd
+				m.newTabPrompt, promptCmd = m.newTabPrompt.Update(msg)
+				return m, promptCmd
+			}
 		}
 
 		switch {
@@ -315,6 +449,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newSections, fetchSectionsCmds := m.fetchAllViewSections()
 			m.setCurrentViewSections(newSections)
 			cmds = append(cmds, fetchSectionsCmds)
+
+		case key.Matches(msg, m.keys.ReloadConfig):
+			return m, m.reloadConfig
+
+		case key.Matches(msg, m.keys.NewTabFromSearch):
+			if currSection != nil && (m.ctx.View == config.PRsView || m.ctx.View == config.IssuesView) {
+				m.pendingNewTabFilters = currSection.GetFilters()
+				m.sectionPromptMode = sectionPromptCreateTab
+				m.newTabPrompt.Reset()
+				m.newTabPrompt.SetPrompt("Título da nova aba: ")
+				cmds = append(cmds, m.newTabPrompt.Focus())
+			}
+
+		case key.Matches(msg, m.keys.EditSectionFilter):
+			if currSection != nil && (m.ctx.View == config.PRsView || m.ctx.View == config.IssuesView) {
+				title := currSection.GetConfig().Title
+				if currSection.GetId() == 0 || title == "" {
+					m.ctx.Error = fmt.Errorf("esta é uma busca temporária, sem aba fixa para editar - use Ctrl+T para criar uma aba a partir dela")
+					break
+				}
+
+				key := "prSections"
+				if m.ctx.View == config.IssuesView {
+					key = "issuesSections"
+				}
+
+				sectionCfg := currSection.GetConfig()
+				m.pendingSectionKey = key
+				m.pendingSectionTitle = title
+				m.pendingSectionOriginal = newSectionFieldSnapshot(sectionCfg)
+				editor := sectioneditor.New(m.ctx, title, sectionCfg)
+				editor.SetWidth(min(80, m.ctx.ScreenWidth-10))
+				m.sectionEditor = &editor
+			}
 
 		case key.Matches(msg, m.keys.Redraw):
 			// with bubbletea v2's declarative approach, if we just clear the screen then tea will redraw for us
@@ -673,6 +841,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case initMsg:
 		m.ctx.Config = &msg.Config
+		m.ctx.ConfigPath = msg.ConfigPath
 		m.ctx.RepoUrl = msg.RepoUrl
 		m.ctx.Theme = theme.ParseTheme(m.ctx.Config)
 		m.ctx.Styles = context.InitStyles(m.ctx.Theme)
@@ -702,6 +871,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds = append(cmds, fetchSectionsCmds, m.tabs.Init(), fetchUser,
 			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
+
+	case configReloadedMsg:
+		if msg.Err != nil {
+			m.ctx.Error = msg.Err
+			break
+		}
+		m.ctx.Config = &msg.Config
+		m.ctx.ConfigPath = msg.ConfigPath
+		m.ctx.Theme = theme.ParseTheme(m.ctx.Config)
+		m.ctx.Styles = context.InitStyles(m.ctx.Theme)
+		newSections, fetchSectionsCmds := m.fetchAllViewSections()
+		m.setCurrentViewSections(newSections)
+		cmds = append(cmds, fetchSectionsCmds)
 
 	case intervalRefresh:
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
@@ -935,6 +1117,28 @@ func (m Model) View() tea.View {
 		return v
 	}
 
+	if m.sectionEditor != nil {
+		v.Content = lipgloss.Place(
+			m.ctx.ScreenWidth,
+			m.ctx.ScreenHeight,
+			lipgloss.Center,
+			lipgloss.Center,
+			m.sectionEditor.View(),
+		)
+		return v
+	}
+
+	if m.sectionPromptMode != sectionPromptNone {
+		v.Content = lipgloss.Place(
+			m.ctx.ScreenWidth,
+			m.ctx.ScreenHeight,
+			lipgloss.Center,
+			lipgloss.Center,
+			m.renderSectionPromptBox(),
+		)
+		return v
+	}
+
 	s := strings.Builder{}
 	if m.ctx.View != config.RepoView {
 		s.WriteString(m.tabs.View())
@@ -1006,8 +1210,9 @@ func (m Model) View() tea.View {
 }
 
 type initMsg struct {
-	Config  config.Config
-	RepoUrl string
+	Config     config.Config
+	ConfigPath string
+	RepoUrl    string
 }
 
 // Message types for notification subject fetching
@@ -1818,6 +2023,24 @@ func fetchUser() tea.Msg {
 	}
 }
 
+// renderSectionPromptBox draws m.newTabPrompt (used by Ctrl+T) in a
+// bordered box, matching the style of the sectioneditor overlay.
+func (m *Model) renderSectionPromptBox() string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.ctx.Theme.PrimaryBorder).
+		Padding(1, 2)
+
+	helpStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+
+	return boxStyle.Render(lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.newTabPrompt.View(),
+		"",
+		helpStyle.Render("enter: confirmar  •  esc: cancelar"),
+	))
+}
+
 type intervalRefresh time.Time
 
 func (m *Model) doRefreshAtInterval() tea.Cmd {
@@ -1842,6 +2065,96 @@ func (m *Model) doUpdateFooterAtInterval() tea.Cmd {
 			return updateFooterMsg{}
 		},
 	)
+}
+
+// createSectionFromCurrentSearch appends a new PrsSectionConfig/
+// IssuesSectionConfig entry (title + the currently active search/filter) to
+// the effective config file, then reuses reloadConfig so the new tab shows
+// up immediately without restarting the process.
+func (m *Model) createSectionFromCurrentSearch(title, filters string) tea.Cmd {
+	var key string
+	var section any
+	switch m.ctx.View {
+	case config.IssuesView:
+		key = "issuesSections"
+		section = config.IssuesSectionConfig{Title: title, Filters: filters}
+	default:
+		key = "prSections"
+		section = config.PrsSectionConfig{Title: title, Filters: filters}
+	}
+
+	if err := config.AppendSection(m.ctx.ConfigPath, key, section); err != nil {
+		m.ctx.Error = err
+		return nil
+	}
+
+	return m.reloadConfig
+}
+
+// saveCurrentSectionEdits renames the section (if the Title field changed)
+// before delegating to updateCurrentSectionFields for the remaining
+// fields - both writes just reload the config on disk, there's no separate
+// in-memory "live-patch this running section" path.
+func (m *Model) saveCurrentSectionEdits(key, oldTitle, newTitle string, original sectionFieldSnapshot, filters, limit, extraFields, localFilter string) tea.Cmd {
+	title := oldTitle
+	renamed := false
+
+	if newTitle != "" && newTitle != oldTitle {
+		if err := config.RenameSection(m.ctx.ConfigPath, key, oldTitle, newTitle); err != nil {
+			m.ctx.Error = err
+			return nil
+		}
+		title = newTitle
+		renamed = true
+	}
+
+	cmd := m.updateCurrentSectionFields(key, title, original, filters, limit, extraFields, localFilter)
+	if cmd == nil && renamed && m.ctx.Error == nil {
+		// The rename alone already wrote to disk - reload even if no other
+		// field changed (and no error happened while applying them).
+		return m.reloadConfig
+	}
+	return cmd
+}
+
+// updateCurrentSectionFields rewrites whichever of filters/limit/
+// extraFields/localFilter actually changed from original, within the
+// section titled title in the given config key ("prSections"/
+// "issuesSections"), then reuses reloadConfig so the change is reflected
+// immediately. Fields left blank are removed from the config entirely -
+// except filters, which is always required and is left alone if cleared.
+//
+// Fields that didn't change are intentionally NOT rewritten: extraFields/
+// localFilter can hold a shared YAML anchor (&anchor) referenced via
+// *alias elsewhere in the file, which lives only in the source text, not
+// in the parsed config - rewriting an untouched field would silently drop
+// its anchor and break whatever references it.
+func (m *Model) updateCurrentSectionFields(key, title string, original sectionFieldSnapshot, filters, limit, extraFields, localFilter string) tea.Cmd {
+	var fields []config.FieldValue
+
+	if filters != original.Filters && filters != "" {
+		fields = append(fields, config.FieldValue{Name: "filters", Value: filters, IsSet: true})
+	}
+	if limit != original.Limit {
+		fields = append(fields, config.FieldValue{Name: "limit", Value: limit, IsSet: limit != ""})
+	}
+	if extraFields != original.ExtraFields {
+		fields = append(fields, config.FieldValue{Name: "extraFields", Value: extraFields, IsSet: extraFields != ""})
+	}
+	if localFilter != original.LocalFilter {
+		fields = append(fields, config.FieldValue{Name: "localFilter", Value: localFilter, IsSet: localFilter != ""})
+	}
+
+	if len(fields) == 0 {
+		return nil
+	}
+
+	if err := config.UpdateSectionFields(m.ctx.ConfigPath, key, title, fields); err != nil {
+		m.ctx.Error = err
+		return nil
+	}
+
+	return m.reloadConfig
 }
 
 // promptConfirmationForNotificationPR shows a confirmation prompt for PR actions

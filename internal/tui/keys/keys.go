@@ -38,6 +38,9 @@ type KeyMap struct {
 	OpenGithub            key.Binding
 	Refresh               key.Binding
 	RefreshAll            key.Binding
+	ReloadConfig          key.Binding
+	NewTabFromSearch      key.Binding
+	EditSectionFilter     key.Binding
 	Redraw                key.Binding
 	PageDown              key.Binding
 	PageUp                key.Binding
@@ -123,6 +126,9 @@ func (k KeyMap) AppKeys() []key.Binding {
 	return []key.Binding{
 		k.Refresh,
 		k.RefreshAll,
+		k.ReloadConfig,
+		k.NewTabFromSearch,
+		k.EditSectionFilter,
 		k.TogglePreview,
 		k.TogglePreviewPosition,
 		k.OpenGithub,
@@ -172,6 +178,18 @@ var Keys = &KeyMap{
 	RefreshAll: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "refresh all"),
+	),
+	ReloadConfig: key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "reload config"),
+	),
+	NewTabFromSearch: key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("ctrl+t", "new tab from search"),
+	),
+	EditSectionFilter: key.NewBinding(
+		key.WithKeys("ctrl+e"),
+		key.WithHelp("ctrl+e", "edit tab filter"),
 	),
 	PageDown: key.NewBinding(
 		key.WithKeys("ctrl+d"),
@@ -300,6 +318,12 @@ func rebindUniversal(universal []config.Keybinding) error {
 			key = &Keys.Refresh
 		case "refreshAll":
 			key = &Keys.RefreshAll
+		case "reloadConfig":
+			key = &Keys.ReloadConfig
+		case "newTabFromSearch":
+			key = &Keys.NewTabFromSearch
+		case "editSectionFilter":
+			key = &Keys.EditSectionFilter
 		case "redraw":
 			key = &Keys.Redraw
 		case "pageDown":

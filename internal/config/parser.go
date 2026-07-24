@@ -880,6 +880,30 @@ func ParseConfig(location Location) (Config, error) {
 	return parser.unmarshalConfigWithDefaults()
 }
 
+// ResolveConfigPath returns the config file path that ParseConfig would
+// treat as the effective one for the given location: the user-provided
+// path (--config flag, GH_DASH_CONFIG, or repo-root .gh-dash.yml) if any,
+// otherwise the global XDG config path (created with defaults if missing).
+//
+// Note: if both a user-provided and the global config define the same
+// section list (prSections/issuesSections/notificationsSections), the
+// user-provided one wins wholesale in the merged Config (see sectionTypes),
+// even though this function only ever returns one of the two paths.
+func ResolveConfigPath(location Location) (string, error) {
+	parser := initParser()
+
+	if userProvidedCfgPath := parser.getProvidedConfigPath(location); userProvidedCfgPath != "" {
+		return userProvidedCfgPath, nil
+	}
+
+	globalCfgPath, err := parser.getGlobalConfigPathOrCreateIfMissing()
+	if err != nil {
+		return "", parsingError{path: globalCfgPath, err: err}
+	}
+
+	return globalCfgPath, nil
+}
+
 func (parser ConfigParser) unmarshalConfigWithDefaults() (Config, error) {
 	cfg := parser.getDefaultConfig()
 	err := parser.k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{Tag: "yaml"})

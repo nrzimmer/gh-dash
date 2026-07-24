@@ -442,13 +442,22 @@ func (m *BaseModel) GetMainContent() string {
 
 func (m *BaseModel) View() string {
 	search := m.SearchBar.View(m.Ctx)
+
+	lines := []string{search}
+	if m.Config.LocalFilter != "" {
+		localFilterLine := lipgloss.NewStyle().
+			Foreground(m.Ctx.Theme.FaintText).
+			Render("localFilter: " + m.Config.LocalFilter)
+		lines = append(lines, localFilterLine)
+	}
+	lines = append(lines, m.GetMainContent())
+
 	return m.Ctx.Styles.Section.ContainerStyle.
 		Width(m.Ctx.MainContentWidth).
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Left,
-				search,
-				m.GetMainContent(),
+				lines...,
 			),
 		)
 }

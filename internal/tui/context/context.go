@@ -48,6 +48,7 @@ type ProgramContext struct {
 	BackgroundSource     string
 	Config               *config.Config
 	ConfigFlag           string
+	ConfigPath           string
 	Version              string
 	View                 config.ViewType
 	Error                error
