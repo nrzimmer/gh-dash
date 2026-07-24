@@ -40,6 +40,16 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
 
+// TestMain initializes the bubblezone manager once for every test in this
+// package: tabs.UpdateTabTitles (and the footer's view-switcher/donate
+// buttons) call zone.Mark unconditionally, which panics if no manager was
+// ever set up - production does this once in cmd/root.go, tests need the
+// same.
+func TestMain(m *testing.M) {
+	zone.NewGlobal()
+	os.Exit(m.Run())
+}
+
 // func TestFullOutput(t *testing.T) {
 // 	setupTest(t)
 // 	m := NewModel(config.Location{RepoPath: "", ConfigFlag: "../config/testdata/test-config.yml"})
@@ -2223,6 +2233,106 @@ func TestView_RendersNewTabPromptWhenOpen(t *testing.T) {
 
 	view := m.View()
 	require.Contains(t, view.Content, "confirmar")
+}
+
+// newTestModelForMouseClicks builds a Model with two PR sections (the
+// ephemeral search tab at id 0, plus a real "Mine" tab at id 1) and renders
+// it once so tabs/view-switcher zones are registered via zone.Scan -
+// mirroring what a real render pass does before any click could land.
+func newTestModelForMouseClicks(t *testing.T) Model {
+	t.Helper()
+
+	// Other tests in this package may have disabled zone tracking (it's
+	// process-global state) - these tests need it on to register real
+	// zone bounds, so restore it explicitly rather than relying on
+	// whatever a previous test left behind.
+	zone.SetEnabled(true)
+
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag:       "../config/testdata/test-config.yml",
+		SkipGlobalConfig: true,
+	})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:       &cfg,
+		View:         config.PRsView,
+		ScreenWidth:  120,
+		ScreenHeight: 40,
+		StartTask:    func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	searchSection := prssection.NewModel(0, ctx, config.PrsSectionConfig{Title: "", Filters: ""}, time.Now(), time.Now())
+	prSection := prssection.NewModel(1, ctx, config.PrsSectionConfig{Title: "Mine", Filters: "is:open author:@me"}, time.Now(), time.Now())
+
+	m := Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		currSectionId:    1,
+		prs:              []section.Section{&searchSection, &prSection},
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+	}
+	m.tabs.SetSections(m.prs)
+	m.View() // triggers zone.Scan(), registering tab/view-switcher bounds
+
+	return m
+}
+
+func clickZone(t *testing.T, id string) tea.MouseClickMsg {
+	t.Helper()
+	z := zone.Get(id)
+	require.False(t, z.IsZero(), "zone %q was not registered - was View() rendered first?", id)
+	return tea.MouseClickMsg{X: z.StartX, Y: z.StartY, Button: tea.MouseLeft}
+}
+
+func TestMouseClick_OnTabSelectsThatSection(t *testing.T) {
+	m := newTestModelForMouseClicks(t)
+	require.Equal(t, 1, m.currSectionId, "sanity check: starts on the real tab, not the search tab")
+
+	newModel, _ := m.Update(clickZone(t, "tab-0"))
+	updated := newModel.(Model)
+
+	require.Equal(t, 0, updated.currSectionId, "clicking tab-0 must select the search tab")
+}
+
+func TestMouseClick_OnViewSwitcherButtonSwitchesView(t *testing.T) {
+	m := newTestModelForMouseClicks(t)
+	require.Equal(t, config.PRsView, m.ctx.View)
+
+	newModel, cmd := m.Update(clickZone(t, "view-switcher-issues"))
+	updated := newModel.(Model)
+
+	require.Equal(t, config.IssuesView, updated.ctx.View)
+	require.NotNil(t, cmd)
+}
+
+func TestMouseClick_OnAlreadyActiveViewButtonDoesNothing(t *testing.T) {
+	m := newTestModelForMouseClicks(t)
+	require.Equal(t, config.PRsView, m.ctx.View)
+
+	newModel, cmd := m.Update(clickZone(t, "view-switcher-prs"))
+	updated := newModel.(Model)
+
+	require.Equal(t, config.PRsView, updated.ctx.View)
+	require.Nil(t, cmd)
+}
+
+func TestMouseClick_OutsideAnyZoneChangesNothing(t *testing.T) {
+	m := newTestModelForMouseClicks(t)
+
+	newModel, _ := m.Update(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	updated := newModel.(Model)
+
+	require.Equal(t, 1, updated.currSectionId)
+	require.Equal(t, config.PRsView, updated.ctx.View)
 }
 
 func TestPromptConfirmationForNotificationPR_ApproveWorkflows(t *testing.T) {

@@ -1033,6 +1033,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, openCmd)
 		}
 
+		for i := range m.getCurrentViewSections() {
+			if zone.Get(fmt.Sprintf("tab-%d", i)).InBounds(msg) {
+				m.setCurrSectionId(i)
+				return m, m.onViewedRowChanged()
+			}
+		}
+
+		viewButtons := []config.ViewType{config.NotificationsView, config.PRsView, config.IssuesView}
+		if config.IsFeatureEnabled(config.FF_REPO_VIEW) {
+			viewButtons = append(viewButtons, config.RepoView)
+		}
+		for _, view := range viewButtons {
+			if zone.Get(fmt.Sprintf("view-switcher-%s", view)).InBounds(msg) {
+				if view == m.ctx.View {
+					break
+				}
+				return m, m.switchToView(view)
+			}
+		}
+
 	case tea.WindowSizeMsg:
 		m.onWindowSizeChanged(msg)
 
@@ -1834,35 +1854,44 @@ func (m *Model) setCurrentViewSections(newSections []section.Section) {
 func (m *Model) switchSelectedView() tea.Cmd {
 	repoFF := config.IsFeatureEnabled(config.FF_REPO_VIEW)
 
-	// Reset notification subject when leaving notifications view
-	if m.ctx.View == config.NotificationsView {
-		keys.SetNotificationSubject(keys.NotificationSubjectNone)
-		m.notificationView.ClearSubject()
-	}
-
 	// View cycle: Notifications → PRs → Issues (→ Repo if enabled) → Notifications
+	newView := m.ctx.View
 	if repoFF {
 		switch m.ctx.View {
 		case config.NotificationsView:
-			m.ctx.View = config.PRsView
+			newView = config.PRsView
 		case config.PRsView:
-			m.ctx.View = config.IssuesView
+			newView = config.IssuesView
 		case config.IssuesView:
-			m.ctx.View = config.RepoView
+			newView = config.RepoView
 		case config.RepoView:
-			m.ctx.View = config.NotificationsView
+			newView = config.NotificationsView
 		}
 	} else {
 		switch m.ctx.View {
 		case config.NotificationsView:
-			m.ctx.View = config.PRsView
+			newView = config.PRsView
 		case config.PRsView:
-			m.ctx.View = config.IssuesView
+			newView = config.IssuesView
 		default:
-			m.ctx.View = config.NotificationsView
+			newView = config.NotificationsView
 		}
 	}
 
+	return m.switchToView(newView)
+}
+
+// switchToView switches directly to newView (used by both the keyboard
+// cycle in switchSelectedView and a direct click on a view-switcher
+// button), fetching that view's sections if they aren't loaded yet.
+func (m *Model) switchToView(newView config.ViewType) tea.Cmd {
+	// Reset notification subject when leaving notifications view
+	if m.ctx.View == config.NotificationsView && newView != config.NotificationsView {
+		keys.SetNotificationSubject(keys.NotificationSubjectNone)
+		m.notificationView.ClearSubject()
+	}
+
+	m.ctx.View = newView
 	m.syncMainContentDimensions()
 	m.setCurrSectionId(m.getCurrentViewDefaultSection())
 
