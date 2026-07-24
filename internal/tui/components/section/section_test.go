@@ -584,3 +584,38 @@ func TestView_OmitsLocalFilterLineWhenNotConfigured(t *testing.T) {
 
 	require.NotContains(t, view, "localFilter:")
 }
+
+// TestView_LocalFilterLineDoesNotGrowTotalHeight is a regression test: the
+// localFilter line must not push the total rendered content past
+// MainContentHeight, since that would push the footer (rendered as a fixed
+// last element right after the section, with no scrolling) off-screen. The
+// extra line must be compensated for in GetDimensions(), keeping total
+// line count identical whether or not LocalFilter is set.
+func TestView_LocalFilterLineDoesNotGrowTotalHeight(t *testing.T) {
+	without := newTestBaseModelForLocalFilter(t, "")
+	withFilter := newTestBaseModelForLocalFilter(t, `status != nil and status.name == "In Progress"`)
+
+	linesWithout := strings.Split(without.View(), "\n")
+	linesWith := strings.Split(withFilter.View(), "\n")
+
+	require.Equal(t, len(linesWithout), len(linesWith),
+		"adding a localFilter line must not change the section's total rendered height")
+}
+
+func TestView_TruncatesLongLocalFilterToASingleLine(t *testing.T) {
+	longFilter := strings.Repeat("a", 500)
+	m := newTestBaseModelForLocalFilter(t, longFilter)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	found := 0
+	for _, line := range lines {
+		if strings.Contains(line, "localFilter:") {
+			found++
+			require.LessOrEqual(t, lipgloss.Width(line), m.Ctx.MainContentWidth,
+				"a long localFilter must be truncated to fit within MainContentWidth, not wrap")
+		}
+	}
+	require.Equal(t, 1, found, "the localFilter line must render as exactly one line")
+}

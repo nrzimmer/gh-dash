@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/go-sprout/sprout"
 	timeregistry "github.com/go-sprout/sprout/registry/time"
 
@@ -194,13 +195,23 @@ type PromptConfirmation interface {
 	GetPromptConfirmation() string
 }
 
+// localFilterLineHeight is how many extra rows BaseModel.View() adds below
+// the search bar when the section has LocalFilter set - it's always
+// truncated to a single line (see View()), so this is always 0 or 1.
+func (m *BaseModel) localFilterLineHeight() int {
+	if m.Config.LocalFilter != "" {
+		return 1
+	}
+	return 0
+}
+
 func (m *BaseModel) GetDimensions() constants.Dimensions {
 	return constants.Dimensions{
 		Width: max(
 			0,
 			m.Ctx.MainContentWidth-m.Ctx.Styles.Section.ContainerStyle.GetHorizontalPadding(),
 		),
-		Height: max(0, m.Ctx.MainContentHeight-common.SearchHeight),
+		Height: max(0, m.Ctx.MainContentHeight-common.SearchHeight-m.localFilterLineHeight()),
 	}
 }
 
@@ -445,9 +456,10 @@ func (m *BaseModel) View() string {
 
 	lines := []string{search}
 	if m.Config.LocalFilter != "" {
+		width := max(0, m.Ctx.MainContentWidth-m.Ctx.Styles.Section.ContainerStyle.GetHorizontalPadding())
 		localFilterLine := lipgloss.NewStyle().
 			Foreground(m.Ctx.Theme.FaintText).
-			Render("localFilter: " + m.Config.LocalFilter)
+			Render(ansi.Truncate("localFilter: "+m.Config.LocalFilter, width, constants.Ellipsis))
 		lines = append(lines, localFilterLine)
 	}
 	lines = append(lines, m.GetMainContent())
