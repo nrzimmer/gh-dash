@@ -145,6 +145,11 @@ func (t *TestSection) ResetRows() {
 	panic("unimplemented")
 }
 
+// SetCurrRow implements section.Section.
+func (t *TestSection) SetCurrRow(n int) int {
+	panic("unimplemented")
+}
+
 // SetIsLoading implements section.Section.
 func (t *TestSection) SetIsLoading(val bool) {
 	t.loading = val

@@ -169,6 +169,7 @@ type Table interface {
 	CurrRow() int
 	NextRow() int
 	PrevRow() int
+	SetCurrRow(n int) int
 	FirstItem() int
 	LastItem() int
 	FetchNextPageSectionRows() []tea.Cmd
@@ -336,6 +337,10 @@ func (m *BaseModel) NextRow() int {
 
 func (m *BaseModel) PrevRow() int {
 	return m.Table.PrevItem()
+}
+
+func (m *BaseModel) SetCurrRow(n int) int {
+	return m.Table.SetCurrRow(n)
 }
 
 func (m *BaseModel) FirstItem() int {

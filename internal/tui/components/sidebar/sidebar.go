@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/keys"
@@ -45,6 +46,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, keys.Keys.PageUp):
 			m.viewport.HalfPageUp()
 		}
+
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelDown:
+			m.viewport.ScrollDown(3)
+		case tea.MouseWheelUp:
+			m.viewport.ScrollUp(3)
+		}
 	}
 
 	return m, nil
@@ -55,6 +64,10 @@ func (m Model) View() string {
 		return ""
 	}
 
+	return zone.Mark("sidebar-pane", m.renderContent())
+}
+
+func (m Model) renderContent() string {
 	if m.ctx.PreviewPosition == "bottom" {
 		height := m.ctx.DynamicPreviewHeight
 		width := m.ctx.DynamicPreviewWidth

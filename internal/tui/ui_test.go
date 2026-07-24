@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,7 +35,9 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prview"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/section"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/sidebar"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/table"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/tabs"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/keys"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
@@ -2333,6 +2336,136 @@ func TestMouseClick_OutsideAnyZoneChangesNothing(t *testing.T) {
 
 	require.Equal(t, 1, updated.currSectionId)
 	require.Equal(t, config.PRsView, updated.ctx.View)
+}
+
+// newTestModelForRowClicks is like newTestModelForMouseClicks, but also
+// populates the "Mine" section's table with real rows (matching its actual
+// column count) and gives it real dimensions, so its rows render, get
+// zone-marked, and can be clicked on.
+func newTestModelForRowClicks(t *testing.T) Model {
+	t.Helper()
+
+	zone.SetEnabled(true)
+
+	cfg, err := config.ParseConfig(config.Location{
+		ConfigFlag:       "../config/testdata/test-config.yml",
+		SkipGlobalConfig: true,
+	})
+	require.NoError(t, err)
+
+	ctx := &context.ProgramContext{
+		Config:            &cfg,
+		View:              config.PRsView,
+		ScreenWidth:       120,
+		ScreenHeight:      40,
+		MainContentWidth:  100,
+		MainContentHeight: 30,
+		StartTask:         func(task context.Task) tea.Cmd { return nil },
+	}
+	ctx.Theme = theme.ParseTheme(ctx.Config)
+	ctx.Styles = context.InitStyles(ctx.Theme)
+
+	searchSection := prssection.NewModel(0, ctx, config.PrsSectionConfig{Title: "", Filters: ""}, time.Now(), time.Now())
+	prSection := prssection.NewModel(1, ctx, config.PrsSectionConfig{Title: "Mine", Filters: "is:open author:@me"}, time.Now(), time.Now())
+
+	prSection.Table.SetDimensions(constants.Dimensions{Width: 100, Height: 30})
+	numCols := len(prSection.Table.Columns)
+	rows := make([]table.Row, 3)
+	for i := range rows {
+		row := make(table.Row, numCols)
+		for c := range row {
+			row[c] = fmt.Sprintf("r%d-c%d", i, c)
+		}
+		rows[i] = row
+	}
+	prSection.Table.SetRows(rows)
+	// NumRows() (used by ui.go's row-click loop) reads len(m.Prs), not
+	// len(m.Table.Rows) - populate both. Primary must be non-nil: any
+	// message reaching prssection.Update can trigger BuildRows(), which
+	// dereferences it while rendering.
+	prSection.Prs = make([]prrow.Data, len(rows))
+	for i := range prSection.Prs {
+		prSection.Prs[i] = prrow.Data{Primary: &data.PullRequestData{}}
+	}
+
+	m := Model{
+		ctx:              ctx,
+		keys:             keys.Keys,
+		currSectionId:    1,
+		prs:              []section.Section{&searchSection, &prSection},
+		sidebar:          sidebar.NewModel(),
+		footer:           footer.NewModel(ctx),
+		tabs:             tabs.NewModel(ctx),
+		prView:           prview.NewModel(ctx),
+		issueSidebar:     issueview.NewModel(ctx),
+		branchSidebar:    branchsidebar.NewModel(ctx),
+		notificationView: notificationview.NewModel(ctx),
+	}
+	m.tabs.SetSections(m.prs)
+	m.View()
+
+	return m
+}
+
+func TestMouseClick_OnRowSelectsThatRow(t *testing.T) {
+	m := newTestModelForRowClicks(t)
+	currSection := m.getCurrSection()
+	require.Equal(t, 0, currSection.CurrRow(), "sanity check: starts on the first row")
+
+	// Poll for the zone: zone.Scan() (run inside m.View()) buffers zone info
+	// asynchronously (documented on Manager.Scan), so it may briefly lag.
+	require.Eventually(t, func() bool {
+		return !zone.Get("row-1").IsZero()
+	}, time.Second, time.Millisecond, "row-1 must be a registered zone")
+
+	newModel, _ := m.Update(clickZone(t, "row-1"))
+	updated := newModel.(Model)
+
+	require.Equal(t, 1, updated.getCurrSection().CurrRow(), "clicking row-1 must select that row")
+}
+
+func TestMouseWheel_DownOverListMovesSelectionDown(t *testing.T) {
+	m := newTestModelForRowClicks(t)
+	require.Equal(t, 0, m.getCurrSection().CurrRow())
+
+	// Cursor at (0,0), nowhere near the (closed) sidebar.
+	newModel, cmd := m.Update(tea.MouseWheelMsg{X: 0, Y: 0, Button: tea.MouseWheelDown})
+	updated := newModel.(Model)
+
+	// Only 3 rows exist (indices 0-2), so 3 steps down from 0 clamps at 2.
+	require.Equal(t, 2, updated.getCurrSection().CurrRow(), "one wheel tick moves down, clamped to the last row")
+	require.NotNil(t, cmd)
+}
+
+func TestMouseWheel_UpOverListMovesSelectionUp(t *testing.T) {
+	m := newTestModelForRowClicks(t)
+	m.getCurrSection().SetCurrRow(2)
+
+	newModel, _ := m.Update(tea.MouseWheelMsg{X: 0, Y: 0, Button: tea.MouseWheelUp})
+	updated := newModel.(Model)
+
+	require.Equal(t, 0, updated.getCurrSection().CurrRow(), "wheel up must move back toward row 0, clamped")
+}
+
+func TestMouseWheel_OverOpenSidebarDoesNotMoveListSelection(t *testing.T) {
+	m := newTestModelForRowClicks(t)
+	m.sidebar.IsOpen = true
+	m.sidebar.UpdateProgramContext(m.ctx)
+	m.sidebar.SetContent(strings.Repeat("line\n", 100))
+	m.ctx.PreviewPosition = "right"
+	m.View() // re-scan so "sidebar-pane" is registered now that it's open
+
+	require.Eventually(t, func() bool {
+		return !zone.Get("sidebar-pane").IsZero()
+	}, time.Second, time.Millisecond, "sidebar-pane must be a registered zone once open")
+
+	sidebarZone := zone.Get("sidebar-pane")
+	msg := tea.MouseWheelMsg{X: sidebarZone.StartX, Y: sidebarZone.StartY, Button: tea.MouseWheelDown}
+
+	newModel, _ := m.Update(msg)
+	updated := newModel.(Model)
+
+	require.Equal(t, 0, updated.getCurrSection().CurrRow(), "wheel over the sidebar must not move the list's selection")
 }
 
 func TestPromptConfirmationForNotificationPR_ApproveWorkflows(t *testing.T) {

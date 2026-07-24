@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/listviewport"
@@ -122,6 +123,17 @@ func (m *Model) ResetCurrItem() {
 
 func (m *Model) GetCurrItem() int {
 	return m.rowsViewport.GetCurrItem()
+}
+
+// SetCurrRow jumps the selection directly to row n (used when a row is
+// clicked), re-syncing the viewport content so the new selection is
+// highlighted - the row style is baked in at SyncViewPortContent time, not
+// dynamically at View() time.
+func (m *Model) SetCurrRow(n int) int {
+	currItem := m.rowsViewport.SetCurrItem(n)
+	m.SyncViewPortContent()
+
+	return currItem
 }
 
 func (m *Model) PrevItem() int {
@@ -369,10 +381,12 @@ func (m *Model) renderRow(rowId int, headerColumns []string) string {
 		headerColId++
 	}
 
-	return m.ctx.Styles.Table.RowStyle.
+	rendered := m.ctx.Styles.Table.RowStyle.
 		BorderBottom(m.ctx.Config.Theme.Ui.Table.ShowSeparator).
 		MaxWidth(m.dimensions.Width).
 		Render(lipgloss.JoinHorizontal(lipgloss.Top, renderedColumns...))
+
+	return zone.Mark(fmt.Sprintf("row-%d", rowId), rendered)
 }
 
 func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {

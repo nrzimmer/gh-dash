@@ -87,6 +87,15 @@ func (m *Model) GetCurrItem() int {
 	return m.currId
 }
 
+// SetCurrItem jumps the selection directly to n (used when a row is
+// clicked). Unlike NextItem/PrevItem it doesn't adjust the scroll
+// position/bounds, since a click can only ever land on a row that's
+// already visible this frame.
+func (m *Model) SetCurrItem(n int) int {
+	m.currId = utils.Max(0, utils.Min(n, m.NumCurrentItems-1))
+	return m.currId
+}
+
 func (m *Model) NextItem() int {
 	atBottomOfViewport := m.currId >= m.bottomBoundId
 	if atBottomOfViewport {

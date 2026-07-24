@@ -386,21 +386,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case key.Matches(msg, m.keys.Down):
-			if currSection != nil {
-				prevRow := currSection.CurrRow()
-				nextRow := currSection.NextRow()
-				if prevRow != nextRow && nextRow == currSection.NumRows()-1 &&
-					m.ctx.View != config.RepoView {
-					cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
-				}
-				cmd = m.onViewedRowChanged()
-			}
+			cmd = m.stepRowDown()
 
 		case key.Matches(msg, m.keys.Up):
-			if currSection != nil {
-				currSection.PrevRow()
-				cmd = m.onViewedRowChanged()
-			}
+			cmd = m.stepRowUp()
 
 		case key.Matches(msg, m.keys.FirstLine):
 			if currSection != nil {
@@ -1051,6 +1040,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.switchToView(view)
 			}
+		}
+
+		if currSection != nil {
+			for i := range currSection.NumRows() {
+				if zone.Get(fmt.Sprintf("row-%d", i)).InBounds(msg) {
+					currSection.SetCurrRow(i)
+					return m, m.onViewedRowChanged()
+				}
+			}
+		}
+
+	case tea.MouseWheelMsg:
+		overSidebar := m.sidebar.IsOpen && zone.Get("sidebar-pane").InBounds(msg)
+		if !overSidebar && currSection != nil {
+			var cmds []tea.Cmd
+			switch msg.Button {
+			case tea.MouseWheelDown:
+				cmds = append(cmds, m.stepRowDown(), m.stepRowDown(), m.stepRowDown())
+			case tea.MouseWheelUp:
+				cmds = append(cmds, m.stepRowUp(), m.stepRowUp(), m.stepRowUp())
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 	case tea.WindowSizeMsg:
@@ -1849,6 +1860,39 @@ func (m *Model) setCurrentViewSections(newSections []section.Section) {
 	}
 
 	m.tabs.SetSections(newSections)
+}
+
+// stepRowDown moves the current section's selection down one row (used by
+// the Down key and by mouse-wheel-down over the list), fetching the next
+// page if the selection just reached the last loaded row.
+func (m *Model) stepRowDown() tea.Cmd {
+	currSection := m.getCurrSection()
+	if currSection == nil {
+		return nil
+	}
+
+	prevRow := currSection.CurrRow()
+	nextRow := currSection.NextRow()
+
+	var cmds []tea.Cmd
+	if prevRow != nextRow && nextRow == currSection.NumRows()-1 && m.ctx.View != config.RepoView {
+		cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+	}
+	cmds = append(cmds, m.onViewedRowChanged())
+
+	return tea.Batch(cmds...)
+}
+
+// stepRowUp moves the current section's selection up one row (used by the
+// Up key and by mouse-wheel-up over the list).
+func (m *Model) stepRowUp() tea.Cmd {
+	currSection := m.getCurrSection()
+	if currSection == nil {
+		return nil
+	}
+
+	currSection.PrevRow()
+	return m.onViewedRowChanged()
 }
 
 func (m *Model) switchSelectedView() tea.Cmd {

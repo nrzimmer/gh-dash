@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
@@ -14,6 +15,14 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
+
+// TestMain initializes the bubblezone manager once for this package's
+// tests: table.renderRow calls zone.Mark unconditionally (to make list rows
+// clickable), which panics if no manager was ever set up.
+func TestMain(m *testing.M) {
+	zone.NewGlobal()
+	os.Exit(m.Run())
+}
 
 // noopStartTask is a stub that returns nil for testing
 func noopStartTask(task context.Task) tea.Cmd {
