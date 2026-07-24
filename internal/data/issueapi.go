@@ -100,14 +100,15 @@ func makeIssuesQuery(query string) string {
 }
 
 func FetchIssues(query string, limit int, pageInfo *PageInfo) (IssuesResponse, error) {
-	return FetchIssuesLocalFiltered(query, limit, pageInfo, "", "")
+	return FetchIssuesLocalFiltered(query, limit, pageInfo, "", "", "")
 }
 
 // FetchIssuesLocalFiltered behaves like FetchIssues, but when localFilter is
 // non-empty it additionally runs a second, unpaginated raw GraphQL query
 // (see filterNumbersLocally) requesting extraFields and drops any issue for
-// which the expression evaluates to false.
-func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter string) (IssuesResponse, error) {
+// which the expression evaluates to false. viewerLogin (the logged-in
+// user's login) is substituted for any "@me" in localFilter.
+func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter, viewerLogin string) (IssuesResponse, error) {
 	var err error
 	if client == nil {
 		client, err = gh.DefaultGraphQLClient()
@@ -170,7 +171,7 @@ func FetchIssuesLocalFiltered(query string, limit int, pageInfo *PageInfo, extra
 	log.Info("Successfully fetched issues", "query", query, "count", issueCount)
 
 	if localFilter != "" {
-		matched, err := filterNumbersLocally("Issue", makeIssuesQuery(query), limit, extraFields, localFilter)
+		matched, err := filterNumbersLocally("Issue", makeIssuesQuery(query), limit, extraFields, localFilter, viewerLogin)
 		if err != nil {
 			return IssuesResponse{}, err
 		}

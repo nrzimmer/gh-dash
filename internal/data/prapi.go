@@ -506,7 +506,7 @@ func IsEnrichmentCacheCleared() bool {
 }
 
 func FetchPullRequests(query string, limit int, pageInfo *PageInfo) (PullRequestsResponse, error) {
-	return FetchPullRequestsLocalFiltered(query, limit, pageInfo, "", "")
+	return FetchPullRequestsLocalFiltered(query, limit, pageInfo, "", "", "")
 }
 
 // FetchPullRequestsLocalFiltered behaves like FetchPullRequests, but when
@@ -515,8 +515,9 @@ func FetchPullRequests(query string, limit int, pageInfo *PageInfo) (PullRequest
 // drops any PR for which the expression evaluates to false. This lets
 // section configs filter on data GitHub's search API itself can't filter
 // on (e.g. mergeable state, unresolved review threads), fully driven by
-// user config rather than hardcoded Go logic.
-func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter string) (PullRequestsResponse, error) {
+// user config rather than hardcoded Go logic. viewerLogin (the logged-in
+// user's login) is substituted for any "@me" in localFilter.
+func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo, extraFields, localFilter, viewerLogin string) (PullRequestsResponse, error) {
 	var err error
 	if client == nil {
 		if config.IsFeatureEnabled(config.FF_MOCK_DATA) {
@@ -601,7 +602,7 @@ func FetchPullRequestsLocalFiltered(query string, limit int, pageInfo *PageInfo,
 		// capped at `limit`, matching what's already on screen for this
 		// page. Filtering happens after the normal search already reduced
 		// server-side, so this second query stays cheap.
-		matched, err := filterNumbersLocally("PullRequest", makePullRequestsQuery(query), limit, extraFields, localFilter)
+		matched, err := filterNumbersLocally("PullRequest", makePullRequestsQuery(query), limit, extraFields, localFilter, viewerLogin)
 		if err != nil {
 			return PullRequestsResponse{}, err
 		}

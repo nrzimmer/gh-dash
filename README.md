@@ -152,8 +152,15 @@ prSections:
       commits(last: 1) { nodes { commit { committedDate } } }
     localFilter: >-
       reviewDecision != "APPROVED"
-      and not any(reviews.nodes, {.author.login == "YOUR_LOGIN" and .submittedAt >= (len(commits.nodes) > 0 ? commits.nodes[0].commit.committedDate : "")})
+      and not any(reviews.nodes, {.author.login == @me and .submittedAt >= (len(commits.nodes) > 0 ? commits.nodes[0].commit.committedDate : "")})
 ```
+
+`@me` works in `localFilter` the same way it does in `filters` — it's replaced with your
+logged-in GitHub login (already known to the app, no extra API call) before the expression is
+compiled, so `@me` above is exactly equivalent to hardcoding `"YOUR_LOGIN"`, just portable across
+machines/accounts. It only matches as a whole token (`@meta` is left alone), and if the login
+isn't known yet (a brief window right at startup) it safely resolves to an empty string instead of
+crashing.
 
 ### Example 3 — PRs where you left a draft (PENDING) review you never submitted
 
@@ -166,7 +173,7 @@ prSections:
     extraFields: |
       reviews(last: 50) { nodes { author { login } state } }
     localFilter: >-
-      any(reviews.nodes, {.author.login == "YOUR_LOGIN" and .state == "PENDING"})
+      any(reviews.nodes, {.author.login == @me and .state == "PENDING"})
 ```
 
 ### Example 4 — Filtering by a GitHub Projects (v2) custom field

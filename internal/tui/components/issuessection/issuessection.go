@@ -323,7 +323,7 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 		if limit == nil {
 			limit = &m.Ctx.Config.Defaults.IssuesLimit
 		}
-		res, err := data.FetchIssuesLocalFiltered(m.GetFilters(), *limit, m.PageInfo, m.Config.ExtraFields, m.Config.LocalFilter)
+		res, err := data.FetchIssuesLocalFiltered(m.GetFilters(), *limit, m.PageInfo, m.Config.ExtraFields, m.Config.LocalFilter, m.Ctx.User)
 		if err != nil {
 			return constants.TaskFinishedMsg{
 				SectionId:   m.Id,

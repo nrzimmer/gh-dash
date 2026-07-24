@@ -2,6 +2,9 @@ package data
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/expr-lang/expr"
 )
@@ -48,6 +51,26 @@ query LocalFilterSearch($query: String!, $limit: Int!, $after: String) {
 }`, fragmentType, extraFields)
 }
 
+// atMeRe matches the "@me" token in a localFilter expression, the same way
+// GitHub's own search qualifiers do - word-boundary anchored so it doesn't
+// misfire on an unrelated identifier like "@meta".
+var atMeRe = regexp.MustCompile(`@me\b`)
+
+// substituteViewer replaces "@me" in expr with the Go-quoted string literal
+// of viewerLogin, so e.g. `author.login == @me` becomes
+// `author.login == "some-login"` before expr.Compile ever sees it. This
+// works as plain text substitution (rather than injecting a variable into
+// expr.Run's environment) so it can't collide with a real GraphQL field
+// happening to be named "me". If viewerLogin is still unknown (the viewer
+// login hasn't been fetched yet), "@me" becomes "" - a harmless comparison
+// that simply never matches, instead of a compile error.
+func substituteViewer(localFilterExpr, viewerLogin string) string {
+	if !strings.Contains(localFilterExpr, "@me") {
+		return localFilterExpr
+	}
+	return atMeRe.ReplaceAllString(localFilterExpr, strconv.Quote(viewerLogin))
+}
+
 // filterNumbersLocally evaluates localFilterExpr (an expr-lang/expr boolean
 // expression) against every node matched by fullSearchQuery (the section's
 // search query, already wrapped with is:pr/is:issue etc. by the caller),
@@ -56,7 +79,7 @@ query LocalFilterSearch($query: String!, $limit: Int!, $after: String) {
 //
 // If localFilterExpr is empty, this is a no-op: nil is returned and callers
 // should treat that as "don't filter, keep everything".
-func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extraFields, localFilterExpr string) (map[int]bool, error) {
+func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extraFields, localFilterExpr, viewerLogin string) (map[int]bool, error) {
 	if localFilterExpr == "" {
 		return nil, nil
 	}
@@ -64,6 +87,8 @@ func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extra
 	if client == nil {
 		return nil, fmt.Errorf("localFilter: no GraphQL client configured")
 	}
+
+	localFilterExpr = substituteViewer(localFilterExpr, viewerLogin)
 
 	program, err := expr.Compile(localFilterExpr, expr.AsBool())
 	if err != nil {
