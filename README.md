@@ -11,6 +11,37 @@
 >   [In-app section management](#-in-app-section-management-ctrlr-ctrlt-ctrle).
 >
 > Everything else in this README describes the upstream project.
+>
+> **Keeping the `gh dash` extension on this fork's build**: if you also use
+> `gh dash` (the `gh` CLI extension) alongside the standalone `gh-dash`
+> binary, note that they're two independent installs — building this repo
+> with `go install .` only updates `~/.go/bin/gh-dash`, not the extension.
+> `gh extension list` will show the extension as `dlvhdr/gh-dash` even after
+> you've manually swapped its binary for a fork build; that's just leftover
+> manifest metadata, not upstream code actually running.
+>
+> To make `gh dash` run this fork's build:
+>
+> ```sh
+> go install .
+> cp ~/.go/bin/gh-dash ~/.local/share/gh/extensions/gh-dash/gh-dash
+> ```
+>
+> Then pin the extension so `gh extension upgrade` doesn't silently
+> overwrite it with an upstream release (this fork's changes aren't merged
+> upstream, so an upgrade would revert them):
+>
+> ```sh
+> # gh >= ~2.30 exposes this directly:
+> gh extension pin gh-dash
+> # older gh (e.g. 2.94.0 as tested here) has no `pin` subcommand — edit the
+> # manifest field directly instead, which upgrade respects the same way:
+> sed -i 's/ispinned: false/ispinned: true/' ~/.local/share/gh/extensions/gh-dash/manifest.yml
+> ```
+>
+> Re-run the `go install` + `cp` step after every fork change you want
+> reflected in `gh dash` — there's no build-on-demand wiring, it's a plain
+> copied binary.
 
 <br />
 <p align="center">
