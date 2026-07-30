@@ -842,8 +842,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.IsOpen = msg.Config.Defaults.Preview.Open
 		m.syncMainContentDimensions()
 
-		newSections, fetchSectionsCmds := m.fetchAllViewSections()
-		m.setCurrentViewSections(newSections)
 		m.tabs.SetCurrSectionId(1)
 
 		if m.ctx.BackgroundSource != "bubbletea" {
@@ -858,7 +856,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			markdown.InitializeMarkdownStyle(m.ctx)
 		}
 
-		cmds = append(cmds, fetchSectionsCmds, m.tabs.Init(), fetchUser,
+		cmds = append(cmds, fetchUser, m.tabs.Init(),
 			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
 
 	case configReloadedMsg:
@@ -881,6 +879,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case userFetchedMsg:
 		m.ctx.User = msg.user
+		if msg.err != nil {
+			m.ctx.Error = msg.err
+		}
+		newSections, fetchSectionsCmds := m.fetchAllViewSections()
+		m.setCurrentViewSections(newSections)
+		cmds = append(cmds, fetchSectionsCmds)
 
 	case constants.TaskFinishedMsg:
 		task, ok := m.tasks[msg.TaskId]
@@ -2081,13 +2085,14 @@ func (m *Model) renderRunningTask() string {
 
 type userFetchedMsg struct {
 	user string
+	err  error
 }
 
 func fetchUser() tea.Msg {
 	user, err := data.CurrentLoginName()
 	if err != nil {
-		return constants.ErrMsg{
-			Err: err,
+		return userFetchedMsg{
+			err: err,
 		}
 	}
 
