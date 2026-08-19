@@ -462,9 +462,10 @@ func (m *BaseModel) View() string {
 	lines := []string{search}
 	if m.Config.LocalFilter != "" {
 		width := max(0, m.Ctx.MainContentWidth-m.Ctx.Styles.Section.ContainerStyle.GetHorizontalPadding())
+		collapsedLocalFilter := strings.Join(strings.Fields(m.Config.LocalFilter), " ")
 		localFilterLine := lipgloss.NewStyle().
 			Foreground(m.Ctx.Theme.FaintText).
-			Render(ansi.Truncate("localFilter: "+m.Config.LocalFilter, width, constants.Ellipsis))
+			Render(ansi.Truncate("localFilter: "+collapsedLocalFilter, width, constants.Ellipsis))
 		lines = append(lines, localFilterLine)
 	}
 	lines = append(lines, m.GetMainContent())
