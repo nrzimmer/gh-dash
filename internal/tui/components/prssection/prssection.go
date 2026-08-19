@@ -538,7 +538,7 @@ func FetchAllSections(
 			time.Now(),
 			time.Now(),
 		)
-		if len(prs) > 0 && len(prs) >= i+1 && prs[i+1] != nil {
+		if len(prs) > i+1 && prs[i+1] != nil {
 			oldSection := prs[i+1].(*Model)
 			sectionModel.Prs = oldSection.Prs
 			sectionModel.LastFetchTaskId = oldSection.LastFetchTaskId
