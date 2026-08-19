@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/log/v2"
 	"github.com/expr-lang/expr"
 )
 
@@ -126,7 +127,11 @@ func filterNumbersLocally(fragmentType, fullSearchQuery string, limit int, extra
 
 			out, err := expr.Run(program, node)
 			if err != nil {
-				return nil, fmt.Errorf("localFilter: evaluation failed: %w", err)
+				// A single node's data (e.g. a nil field the expression
+				// didn't guard against) shouldn't take down the whole
+				// section - log it and treat that node as not matching.
+				log.Error("localFilter: evaluation failed", "number", number, "err", err)
+				continue
 			}
 			if keep, _ := out.(bool); keep {
 				matched[number] = true
